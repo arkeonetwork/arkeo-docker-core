@@ -1,27 +1,26 @@
-# ---------- Stage 1: build arkeod ----------
-FROM golang:1.22 AS arkeod-builder
+# ---------- Stage 1: build arkeod, api, indexer, sentinel, tools ----------
+FROM golang:1.22 AS builder
 
-RUN apt-get update && apt-get install -y git make && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y git make build-essential curl jq && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
-# TODO: adjust repo path if needed
-RUN git clone https://github.com/arkeonetwork/arkeo.git
+
+# Clone latest Arkeo source (public repo)
+RUN git clone --branch Upgrade-for-v1.0.16 --single-branch https://github.com/arkeonetwork/arkeo.git
+
 WORKDIR /src/arkeo
-RUN make build || go build -o /out/arkeod ./cmd/arkeod
+
+# Build: arkeod, api, indexer, sentinel
+RUN make install
+
+# Build: extra tools (signing utilities, helpers, etc.)
+RUN make tools
+
+# Show all compiled binaries
+RUN ls -al $(go env GOPATH)/bin/
 
 
-# ---------- Stage 2: build sentinel ----------
-FROM golang:1.22 AS sentinel-builder
-
-RUN apt-get update && apt-get install -y git make && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /src
-RUN git clone https://github.com/arkeonetwork/sentinel.git
-WORKDIR /src/sentinel
-RUN make build || go build -o /out/sentinel ./cmd/sentinel
-
-
-# ---------- Final stage: provider runtime ----------
+# ---------- Stage 2: Runtime container ----------
 FROM debian:12-slim
 
 RUN apt-get update && apt-get install -y \
@@ -30,25 +29,30 @@ RUN apt-get update && apt-get install -y \
     supervisor \
     python3 \
     python3-venv \
+    python3-flask \
+    jq \
+    python3-yaml \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# copy the binaries
-COPY --from=arkeod-builder /out/arkeod /usr/local/bin/arkeod
-COPY --from=sentinel-builder /out/sentinel /usr/local/bin/sentinel
+# Copy all binaries produced by make install + make tools
+COPY --from=builder /go/bin/* /usr/local/bin/
 
-# configs (your .toml, genesis, sentinel config)
+# Copy configs (genesis.json, config.toml, sentinel-config.yaml)
 COPY config/ /app/config/
 
-# simple web admin
+# Copy simple admin UI
 COPY admin/ /app/admin/
+COPY admin_api.py /app/admin_api.py
+COPY run_sentinel.sh /app/run_sentinel.sh
+RUN chmod +x /app/run_sentinel.sh
 
-# supervisor + entrypoint
+# Supervisor + entrypoint
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
-EXPOSE 26657 1317 8080
+EXPOSE 26657 1317 8080 9999 3636
 
 ENTRYPOINT ["/app/entrypoint.sh"]

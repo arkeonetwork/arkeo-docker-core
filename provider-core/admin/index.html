@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Arkeo Provider Admin</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="card header-card">
+    <h1>Arkeo Provider Admin</h1>
+</div>
+
+<div class="card">
+    <h2>Sentinel Info</h2>
+    <div class="row">
+        <div class="col">
+            <div id="providerInfo" class="section-body">
+                <div id="providerSummary">(loading provider info...)</div>
+            </div>
+            <div class="stack panel" style="margin-bottom:8px;">
+                <div class="pill-row">
+                    <div class="status-badge status-warn" id="sentinelStatusBadgeTop">(loading)</div>
+                </div>
+                <div class="actions">
+                    <button class="primary" onclick="controlSentinel('restart')">Restart Sentinel</button>
+                    <button class="primary" onclick="controlSentinel('stop')">Stop Sentinel</button>
+                    <button class="primary" onclick="controlSentinel('start')">Start Sentinel</button>
+                </div>
+                <pre id="sentinelControlResult" style="display:none; margin-top:0; min-width:220px;"></pre>
+            </div>
+        </div>
+        <div class="col">
+            <div class="steps">
+                <div class="step">
+                    <h3>Step 1: Provide Sentinel Details</h3>
+                    <p>Configure your sentinel settings before bonding a service.</p>
+                    <p class="muted">Edits may take 1–2 blocks to appear in the dashboard.</p>
+                    <a class="btn" href="sentinel.html">Open Sentinel Form</a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <h2>Provider Services</h2>
+    <div class="row">
+        <div class="col">
+            <div id="providerServices" class="muted" style="margin-bottom:12px;">(loading services...)</div>
+        </div>
+        <div class="col">
+            <div class="steps">
+                <div class="step">
+                    <h3>Step 2: Add Provider Service</h3>
+                    <p>Bond and configure provider services for the marketplace.</p>
+                    <p class="muted">Edits may take 1–2 blocks to appear in the dashboard.</p>
+                    <a class="btn" href="provider.html">Open Provider Services Form</a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="section">
+        <h3>Debug</h3>
+        <p id="version">Loading arkeod version...</p>
+        <span id="refreshBadge" class="status-badge status-warn" style="display:none; margin-bottom:8px;">Refreshing…</span>
+        <button class="primary" onclick="refreshInfo()">Refresh Info</button>
+        <pre id="debugInfo">Loading...</pre>
+        <h4>Sentinel Status</h4>
+        <pre id="sentinelStatus">Loading...</pre>
+    </div>
+</div>
+
+<script>
+    let providerServicesData = [];
+
+    async function refreshInfo() {
+        const debugEl = document.getElementById("debugInfo");
+        debugEl.textContent = "Loading...";
+        const refreshBadge = document.getElementById("refreshBadge");
+        if (refreshBadge) refreshBadge.style.display = "inline-block";
+        try {
+            const fetchNoStore = (url) => fetch(url, { cache: "no-store" });
+            const [provRes, balRes, keyRes, metaRes, svcRes, allSvcRes, sentRes, heightRes] = await Promise.allSettled([
+                fetchNoStore("http://localhost:9999/api/provider-info"),
+                fetchNoStore("http://localhost:9999/api/balance"),
+                fetchNoStore("http://localhost:9999/api/key"),
+                fetchNoStore("http://localhost:9999/api/sentinel-metadata"),
+                fetchNoStore("http://localhost:9999/api/provider-services"),
+                fetchNoStore("http://localhost:9999/api/services"),
+                fetchNoStore("http://localhost:9999/api/sentinel-status"),
+                fetchNoStore("http://localhost:9999/api/block-height"),
+            ]);
+            const prov = provRes.status === "fulfilled" ? await provRes.value.json() : { error: provRes.reason };
+            const bal = balRes.status === "fulfilled" ? await balRes.value.json() : { error: balRes.reason };
+            const key = keyRes.status === "fulfilled" ? await keyRes.value.json() : { error: keyRes.reason };
+            const meta = metaRes.status === "fulfilled" ? await metaRes.value.json() : { error: metaRes.reason };
+            const services = svcRes.status === "fulfilled" ? await svcRes.value.json() : { error: svcRes.reason };
+            const allServices = allSvcRes.status === "fulfilled" ? await allSvcRes.value.json() : { error: allSvcRes.reason };
+            const sentinelStatus = sentRes.status === "fulfilled" ? await sentRes.value.json() : { error: sentRes.reason };
+            const height = heightRes.status === "fulfilled" ? await heightRes.value.json() : { error: heightRes.reason };
+            console.log("Provider services contract data", services);
+            // Provider summary at top
+            const summaryEl = document.getElementById("providerSummary");
+            const metaCfg = (meta && meta.metadata && meta.metadata.config) || {};
+            const envMeta = (prov && prov.provider_metadata) || {};
+            const moniker = metaCfg.moniker || envMeta.MONIKER || "(unset)";
+            const desc = metaCfg.description || envMeta.DESCRIPTION || "(unset)";
+            const location = metaCfg.location || envMeta.LOCATION || "(unset)";
+            const bech32Pubkey =
+                (prov && prov.pubkey && prov.pubkey.bech32) ||
+                (key && key.pubkey && key.pubkey.bech32) ||
+                "(unknown)";
+            const balanceAmt = formatBalance(bal);
+            const blockHeight = formatBlockHeight(height);
+            const shortPub = bech32Pubkey && bech32Pubkey.length > 12
+                ? `${bech32Pubkey.slice(0, 10)}...${bech32Pubkey.slice(-8)}`
+                : bech32Pubkey;
+            summaryEl.innerHTML = `
+                <div><strong>Moniker:</strong> ${moniker}</div>
+                <div><strong>Description:</strong> ${desc}</div>
+                <div><strong>Location:</strong> ${location}</div>
+                <div><strong>Current Block:</strong> ${blockHeight}</div>
+                <div><strong>Hotwallet Balance:</strong> ${balanceAmt}</div>
+                <div><strong>Pubkey:</strong>
+                    <span class="inline">
+                        <span class="truncate" title="${bech32Pubkey}">${shortPub}</span>
+                        <button class="copy-btn" onclick="copyPubkey('${bech32Pubkey}')">Copy</button>
+                    </span>
+                </div>
+            `;
+            const svcEl = document.getElementById("providerServices");
+            const svcLookup = {};
+            if (allServices && Array.isArray(allServices.services)) {
+                allServices.services.forEach(s => {
+                    const rawId = s && (s.id ?? s.service_id ?? s.serviceID);
+                    const key = rawId !== undefined && rawId !== null ? String(rawId) : "";
+                    const name = s ? (s.name || s.service || s.label || "") : "";
+                    if (key) {
+                        svcLookup[key] = name;
+                        // also store numeric key variant to be safe
+                        const numKey = Number(key);
+                        if (!Number.isNaN(numKey)) {
+                            svcLookup[String(numKey)] = name;
+                        }
+                    }
+                });
+            }
+            providerServicesData = services && Array.isArray(services.services) ? services.services : [];
+            if (providerServicesData && providerServicesData.length) {
+                const items = providerServicesData.map((s, idx) => {
+                    let rawId = "";
+                    let rawName = "";
+                    if (s && typeof s === "object") {
+                        const candidateId = s.id ?? s.service_id ?? s.serviceID;
+                        rawId = candidateId !== undefined && candidateId !== null ? String(candidateId) : "";
+                        rawName = s.name || s.service || s.label || "";
+                    } else if (typeof s === "string" || typeof s === "number") {
+                        rawName = String(s);
+                    }
+                    if (!rawId && rawName && /^[0-9]+$/.test(rawName)) {
+                        rawId = rawName;
+                    }
+
+                    let resolvedName = rawName;
+                    const lookupById = rawId ? svcLookup[rawId] : "";
+                    if (!resolvedName || resolvedName === rawId || /^[0-9]+$/.test(resolvedName)) {
+                        resolvedName = lookupById || resolvedName || "(unknown service)";
+                    }
+                    if (!rawId && lookupById) {
+                        rawId = Object.keys(svcLookup).find(k => svcLookup[k] === lookupById) || "";
+                    }
+
+                    const serviceIdLabel = rawId ? `Service ID: ${rawId}` : "Service ID: ?";
+                    const statusVal = s && s.status;
+                    const statusStr = statusVal === undefined ? "active" : String(statusVal).toLowerCase();
+                    const isActive =
+                        statusStr === "1" ||
+                        statusStr === "active" ||
+                        statusStr === "online" ||
+                        statusStr === "true";
+                    const statusLabel = isActive ? "Active" : "Inactive";
+                    const statusClass = isActive ? "ok" : "err";
+                    return `
+                        <div class="service-row">
+                            <div class="service-name">
+                                <span class="status-pill ${statusClass}">(${statusLabel})</span>
+                                <span class="service-pipe">|</span>
+                                ${resolvedName}
+                            </div>
+                            <div class="service-sub">
+                                ${serviceIdLabel}
+                                <span class="service-pipe">|</span>
+                                <button class="primary" onclick="editService(${idx})">Edit</button>
+                            </div>
+                        </div>
+                    `;
+                });
+                svcEl.innerHTML = `<div class="service-grid">${items.join("")}</div>`;
+            } else if (services && services.error) {
+                svcEl.textContent = "Provider services unavailable";
+            } else {
+                svcEl.textContent = "No provider services found";
+            }
+            debugEl.textContent = JSON.stringify(
+                {
+                    provider_info: prov,
+                    balance: bal,
+                    key: key,
+                    sentinel_metadata: meta,
+                    provider_services: services,
+                    all_services: allServices,
+                    sentinel_status: sentinelStatus,
+                    block_height: height,
+                },
+                null,
+                2
+            );
+            updateSentinelStatusDisplay(sentinelStatus);
+        } catch (e) {
+            debugEl.textContent = "Failed to load info: " + e;
+        }
+        if (refreshBadge) refreshBadge.style.display = "none";
+    }
+
+    function updateSentinelStatusDisplay(sentinelStatus) {
+        const statusEl = document.getElementById("sentinelStatus");
+        const badgeTop = document.getElementById("sentinelStatusBadgeTop");
+        const rawStatus = (sentinelStatus && sentinelStatus.status) || "";
+        const upper = rawStatus.toUpperCase();
+        let cls = "status-warn";
+        if (upper.includes("RUNNING")) cls = "status-ok";
+        else if (upper.includes("FATAL") || upper.includes("STOP") || upper.includes("EXIT")) cls = "status-err";
+        if (sentinelStatus && !sentinelStatus.error) {
+            let cleaned = rawStatus.replace(/pid\s+\d+,\s*/gi, "").trim();
+            cleaned = cleaned.replace(/^sentinel\s*/i, "").trim();
+            const display = `Sentinel ${cleaned.replace(",", " :").trim() || "(unknown)"}`
+                .replace(/\s+uptime\s+/i, " : Uptime ");
+            if (badgeTop) {
+                badgeTop.className = `status-badge ${cls}`;
+                badgeTop.textContent = display;
+            }
+            statusEl.textContent = `${display}\n\nstdout:\n${sentinelStatus.log || ""}\n\nstderr:\n${sentinelStatus.err_log || ""}`;
+        } else {
+            statusEl.textContent = "";
+        }
+    }
+
+    function formatBalance(balanceObj) {
+        const coins =
+            (balanceObj && balanceObj.balance && balanceObj.balance.result && Array.isArray(balanceObj.balance.result) && balanceObj.balance.result) ||
+            (balanceObj && balanceObj.balance && balanceObj.balance.balances && Array.isArray(balanceObj.balance.balances) && balanceObj.balance.balances) ||
+            [];
+        if (!coins.length) return "(unknown)";
+        const fmtCoin = (c) => {
+            const amount = c.amount || c.Amount || "";
+            const denom = c.denom || c.Denom || "";
+            if (denom === "uarkeo") {
+                const num = parseInt(amount || "0", 10);
+                const val = num / 1e8;
+                return `${val.toLocaleString("en-US", { minimumFractionDigits: 8, maximumFractionDigits: 8 })} ${denom}`;
+            }
+            return `${amount}${denom}`;
+        };
+        return coins.map(fmtCoin).join(", ");
+    }
+
+    function formatBlockHeight(heightObj) {
+        const h =
+            (heightObj && heightObj.height) ||
+            (heightObj && heightObj.status && (heightObj.status.latest_block_height || (heightObj.status.SyncInfo && heightObj.status.SyncInfo.latest_block_height)));
+        if (!h) return "(unknown)";
+        const num = Number(h);
+        if (!Number.isFinite(num)) return String(h);
+        return num.toLocaleString("en-US");
+    }
+
+    async function refreshSentinelStatus() {
+        try {
+            const res = await fetch("http://localhost:9999/api/sentinel-status");
+            const data = await res.json();
+            updateSentinelStatusDisplay(data);
+        } catch (e) {
+            const badgeTop = document.getElementById("sentinelStatusBadgeTop");
+            if (badgeTop) { badgeTop.className = "status-badge status-warn"; badgeTop.textContent = "unavailable"; }
+        }
+    }
+
+    async function controlSentinel(action) {
+        const resEl = document.getElementById("sentinelControlResult");
+        resEl.style.display = "block";
+        resEl.textContent = `Sending ${action}...`;
+        try {
+            const res = await fetch("http://localhost:9999/api/sentinel-control", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ action }),
+            });
+            const data = await res.json();
+            if (res.ok) {
+                resEl.textContent = `${action} ok: ${JSON.stringify(data)}`;
+                refreshInfo();
+            } else {
+                resEl.textContent = `${action} failed: ${JSON.stringify(data)}`;
+            }
+        } catch (e) {
+            resEl.textContent = `${action} request error: ${e}`;
+        }
+    }
+
+    async function getVersion() {
+        try {
+            let res = await fetch("http://localhost:9999/api/version");
+            let data = await res.json();
+            if (data.arkeod_version) {
+                document.getElementById("version").textContent = "arkeod version: " + data.arkeod_version;
+            } else if (data.error) {
+                document.getElementById("version").textContent = "Error getting version: " + data.error;
+            } else {
+                document.getElementById("version").textContent = "Unknown version response";
+            }
+        } catch (e) {
+            document.getElementById("version").textContent = "Error fetching version: " + e;
+        }
+    }
+
+    function editService(idx) {
+        if (!providerServicesData || !providerServicesData[idx]) return;
+        try {
+            localStorage.setItem("providerServiceEdit", JSON.stringify(providerServicesData[idx]));
+        } catch (e) {
+            console.warn("Failed to cache service for edit", e);
+        }
+        window.location.href = "provider.html";
+    }
+
+    async function copyPubkey(val) {
+        try {
+            await navigator.clipboard.writeText(val);
+            alert("Pubkey copied");
+        } catch (e) {
+            alert("Failed to copy pubkey");
+        }
+    }
+
+    window.addEventListener('load', () => {
+        getVersion();
+        refreshInfo();
+        refreshSentinelStatus();
+        setInterval(refreshSentinelStatus, 5000);
+        setInterval(refreshInfo, 10000);
+    });
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) {
+            refreshInfo();
+        }
+    });
+    window.addEventListener('pageshow', (event) => {
+        if (event.persisted) {
+            refreshInfo();
+        }
+    });
+</script>
+
+</body>
+</html>

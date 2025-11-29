@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Bond Provider Service</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="card header-card">
+    <div class="row-between">
+        <h1>Bond Provider Service</h1>
+        <a href="index.html">Back to Admin Home</a>
+    </div>
+</div>
+
+<div class="card">
+    <h2 style="margin-top:0;">Bond Provider Service</h2>
+    <form id="bondForm" onsubmit="bondProvider(event)">
+        <table>
+            <tr>
+                <td class="label">
+                    Provider Service
+                    <div class="hint">Select an Arkeo supported service you want to provide on the Arkeo Marketplace.</div>
+                </td>
+                <td class="value">
+                    <select id="bondService" required>
+                        <option value="">Select a service</option>
+                    </select>
+                </td>
+            </tr>
+            <tr>
+                <td class="label">
+                    Status
+                    <div class="hint">Choose Active or Inactive on this provider service.</div>
+                </td>
+                <td class="value">
+                    <select id="status">
+                        <option value="1" selected>Active</option>
+                        <option value="0">Inactive</option>
+                    </select>
+                </td>
+            </tr>
+            <tr>
+                <td class="label">
+                    Min Contract Duration
+                    <div class="hint">Minimum supported contract time you want to support, in blocks (5-6 seconds per block).</div>
+                </td>
+                <td class="value">
+                    <input type="number" id="minContractDur" value="5" />
+                </td>
+            </tr>
+            <tr>
+                <td class="label">
+                    Max Contract Duration
+                    <div class="hint">Maximum supported contract time you want to support, in blocks (5-6 seconds per block).</div>
+                </td>
+                <td class="value">
+                    <input type="number" id="maxContractDur" value="432000" />
+                </td>
+            </tr>
+            <tr>
+                <td class="label">
+                    Subscription Rate
+                    <div class="hint">Cost per service transaction.</div>
+                </td>
+                <td class="value">
+                    <input type="text" id="subscriptionRates" value="200uarkeo" />
+                </td>
+            </tr>
+            <tr>
+                <td class="label">
+                    Pay As You Go Rate
+                    <div class="hint">Cost per service transaction.</div>
+                </td>
+                <td class="value">
+                    <input type="text" id="payAsYouGoRates" value="200uarkeo" />
+                </td>
+            </tr>
+            <tr>
+                <td class="label">
+                    Settlement Duration
+                    <div class="hint">After a contract closes, the time to reconcile transactions before releasing remainder, in blocks (5-6 seconds per block).</div>
+                </td>
+                <td class="value">
+                    <input type="number" id="settlementDur" value="1000" />
+                </td>
+            </tr>
+            <tr>
+                <td class="label">
+                    Sentinel URI
+                    <div class="hint">The URI and port for the sentinel service for your provider.</div>
+                </td>
+                <td class="value">
+                    <input type="text" id="sentinelUri" />
+                </td>
+            </tr>
+            <tr>
+                <td class="label">
+                    Hotwallet Key
+                    <div class="hint">The hot wallet key used.</div>
+                </td>
+                <td class="value">
+                    <span id="walletKey">(loading...)</span>
+                </td>
+            </tr>
+            <tr>
+                <td class="label">
+                    Hotwallet Key Backend
+                    <div class="hint">The keyring backend used.</div>
+                </td>
+                <td class="value">
+                    <span id="bondKeyringLabel">test</span>
+                </td>
+            </tr>
+            <tr>
+                <td class="label">
+                    Hotwallet Pubkey
+                    <div class="hint">The pubkey shown on the blockchain contracts.</div>
+                </td>
+                <td class="value">
+                    <span id="bech32PubkeyLabel">(pending)</span>
+                </td>
+            </tr>
+            <tr>
+                <td class="label">
+                    Bond Amount
+                    <div class="hint">The default amount of 1uarkeo to bond your provider with.</div>
+                </td>
+                <td class="value">
+                    <span id="bondAmountLabel">1uarkeo</span>
+                </td>
+            </tr>
+            <tr>
+                <td class="label">
+                    Bond Fees
+                    <div class="hint">Default bond fees.</div>
+                </td>
+                <td class="value">
+                    <span id="bondFeesLabel">200uarkeo</span>
+                </td>
+            </tr>
+            <tr>
+                <td class="label">
+                    Mod Nonce
+                    <div class="hint">Used to increment updates.</div>
+                </td>
+                <td class="value">
+                    <span id="metadataNonceLabel">1</span>
+                    <input type="hidden" id="metadataNonceHidden" value="1" />
+                </td>
+            </tr>
+        </table>
+        <button type="submit" id="bondSubmit" class="primary">Submit Bond + Mod</button>
+    </form>
+</div>
+
+<pre id="bondResult"></pre>
+<pre id="servicesDebug" style="white-space: pre-wrap;"></pre>
+
+<script>
+    let pendingEditService = null;
+    let servicesLoaded = false;
+    let servicesCatalog = [];
+    let editingExisting = false;
+    let noncePrimed = false;
+
+    function setBondLabelForMode() {
+        const label = document.getElementById("bondAmountLabel");
+        if (!label) return;
+        label.textContent = "1uarkeo";
+    }
+
+    function pullPendingEdit() {
+        try {
+            const raw = localStorage.getItem("providerServiceEdit");
+            if (raw) {
+                pendingEditService = JSON.parse(raw);
+                editingExisting = true;
+                localStorage.removeItem("providerServiceEdit");
+            } else {
+                editingExisting = false;
+            }
+        } catch (e) {
+            console.warn("Failed to read cached service edit", e);
+            editingExisting = false;
+        }
+        setBondLabelForMode();
+    }
+
+    async function loadServices() {
+        const select = document.getElementById("bondService");
+        select.innerHTML = '<option value="">Loading services...</option>';
+        try {
+            const res = await fetch("http://localhost:9999/api/services");
+            const data = await res.json();
+            setPre("servicesDebug", "");
+            if (!res.ok) {
+                select.innerHTML = '<option value="">Error loading services</option>';
+                setPre("bondResult", "Error: " + JSON.stringify(data, null, 2));
+                setPre("servicesDebug", "Debug services response:\n" + JSON.stringify(data, null, 2));
+                return;
+            }
+            const services = data.services || [];
+            servicesCatalog = services;
+            if (!services.length) {
+                select.innerHTML = '<option value="">No services found</option>';
+                setPre("servicesDebug", "Debug services response:\n" + JSON.stringify(data, null, 2));
+                return;
+            }
+            select.innerHTML = '<option value="">Select a service</option>';
+            for (const svc of services) {
+                const id = svc.id ?? "";
+                const name = svc.name ?? "";
+                if (!id && !name) continue;
+                const opt = document.createElement("option");
+                // Use the service name as the value; fall back to id only if name missing
+                opt.value = name || id;
+                opt.textContent = name ? `${name} (${id})` : id;
+                select.appendChild(opt);
+            }
+            setPre("servicesDebug", "");
+            servicesLoaded = true;
+            applyPendingEdit();
+        } catch (e) {
+            select.innerHTML = '<option value="">Failed to load services</option>';
+            setPre("bondResult", "Request failed: " + e);
+            setPre("servicesDebug", "Request failed: " + e);
+        }
+    }
+
+    async function bondProvider(event) {
+        event.preventDefault();
+        const submitBtn = document.getElementById("bondSubmit");
+        submitBtn.disabled = true;
+        submitBtn.textContent = "Submitting...";
+        const bondAmount = "1";
+        // Always increment the metadata nonce immediately before submitting
+        const metadataNonce = incrementMetadataNonce();
+        const payload = {
+            service: document.getElementById("bondService").value.trim(),
+            bond: bondAmount,
+            sentinel_uri: document.getElementById("sentinelUri").value.trim(),
+            metadata_nonce: metadataNonce,
+            status: document.getElementById("status").value.trim(),
+            min_contract_dur: document.getElementById("minContractDur").value.trim(),
+            max_contract_dur: document.getElementById("maxContractDur").value.trim(),
+            subscription_rates: document.getElementById("subscriptionRates").value.trim(),
+            pay_as_you_go_rates: document.getElementById("payAsYouGoRates").value.trim(),
+            settlement_dur: document.getElementById("settlementDur").value.trim(),
+        };
+        setPre("bondResult", "Submitting bond...");
+        try {
+            const res = await fetch("http://localhost:9999/api/bond-mod-provider", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify(payload),
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                setPre("bondResult", "Error: " + JSON.stringify(data, null, 2));
+                updateDerivedFields(data);
+                return;
+            }
+            setPre("bondResult", JSON.stringify(data, null, 2));
+            updateDerivedFields(data);
+            if (bondAndModSucceeded(data)) {
+                alert("Save succeeded.");
+            }
+        } catch (e) {
+            setPre("bondResult", "Request failed: " + e);
+        } finally {
+            submitBtn.disabled = false;
+            submitBtn.textContent = "Submit Bond + Mod";
+        }
+    }
+
+    function incrementMetadataNonce() {
+        const hidden = document.getElementById("metadataNonceHidden");
+        const label = document.getElementById("metadataNonceLabel");
+        const current = parseInt(hidden.value || "0", 10);
+        const next = Number.isFinite(current) ? current + 1 : 1;
+        hidden.value = String(next);
+        if (label) label.textContent = String(next);
+        return String(next);
+    }
+
+    function updateDerivedFields(data) {
+        if (!data) return;
+        const pubkeyLabel = document.getElementById("bech32PubkeyLabel");
+        if (data.pubkey && data.pubkey.bech32) {
+            pubkeyLabel.textContent = data.pubkey.bech32;
+        } else if (data.pubkey_error) {
+            pubkeyLabel.textContent = data.pubkey_error;
+        }
+        setBondLabelForMode();
+        if (data.fees) {
+            document.getElementById("bondFeesLabel").textContent = data.fees;
+        }
+        if (data.keyring_backend) {
+            document.getElementById("bondKeyringLabel").textContent = data.keyring_backend;
+        }
+        if (data.user) {
+            document.getElementById("walletKey").textContent = data.user;
+        }
+        if (data.sentinel_uri) {
+            document.getElementById("sentinelUri").value = data.sentinel_uri;
+        }
+        if (data.inputs) {
+            if (data.inputs.sentinel_uri) document.getElementById("sentinelUri").value = data.inputs.sentinel_uri;
+            if (data.inputs.metadata_nonce) {
+                document.getElementById("metadataNonceHidden").value = data.inputs.metadata_nonce;
+                document.getElementById("metadataNonceLabel").textContent = data.inputs.metadata_nonce;
+            }
+            if (data.inputs.status) document.getElementById("status").value = data.inputs.status;
+            if (data.inputs.min_contract_dur) document.getElementById("minContractDur").value = data.inputs.min_contract_dur;
+            if (data.inputs.max_contract_dur) document.getElementById("maxContractDur").value = data.inputs.max_contract_dur;
+            if (data.inputs.subscription_rates) document.getElementById("subscriptionRates").value = data.inputs.subscription_rates;
+            if (data.inputs.pay_as_you_go_rates) document.getElementById("payAsYouGoRates").value = data.inputs.pay_as_you_go_rates;
+            if (data.inputs.settlement_dur) document.getElementById("settlementDur").value = data.inputs.settlement_dur;
+        }
+        applyPendingEdit();
+    }
+
+    async function loadProviderInfo() {
+        try {
+            const res = await fetch("http://localhost:9999/api/provider-info");
+            const data = await res.json();
+            if (!res.ok) {
+                setPre("bondResult", "Error loading provider info: " + JSON.stringify(data, null, 2));
+                return;
+            }
+            updateDerivedFields(data);
+            if (data.fees) document.getElementById("bondFeesLabel").textContent = data.fees;
+            if (data.keyring_backend) document.getElementById("bondKeyringLabel").textContent = data.keyring_backend;
+            if (data.user) document.getElementById("walletKey").textContent = data.user;
+            if (data.pubkey_error) setPre("bondResult", data.pubkey_error);
+            if (data.metadata_nonce) {
+                document.getElementById("metadataNonceHidden").value = data.metadata_nonce;
+                document.getElementById("metadataNonceLabel").textContent = data.metadata_nonce;
+            }
+            if (data.sentinel_uri) {
+                document.getElementById("sentinelUri").value = data.sentinel_uri;
+            }
+            applyPendingEdit();
+        } catch (e) {
+            setPre("bondResult", "Request failed: " + e);
+        }
+    }
+
+    function setPre(id, text) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        if (text === "" || text === null || text === undefined) {
+            el.style.display = "none";
+            el.textContent = "";
+            return;
+        }
+        el.style.display = "block";
+        el.textContent = text;
+    }
+
+    function setSelectFromCandidates(select, candidates) {
+        if (!select || !Array.isArray(candidates)) return false;
+        for (const cand of candidates) {
+            if (!cand) continue;
+            const val = String(cand);
+            for (const opt of select.options) {
+                if (opt.value === val || opt.text === val || opt.text.includes(`(${val})`)) {
+                    select.value = opt.value;
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    function applyPendingEdit() {
+        if (!pendingEditService) return;
+        if (!servicesLoaded) return;
+        const svc = pendingEditService;
+        const select = document.getElementById("bondService");
+        const svcId =
+            svc.id ??
+            svc.service_id ??
+            svc.serviceID ??
+            (typeof svc.service === "number" || typeof svc.service === "string" ? svc.service : null);
+        let resolvedName = svc.name || svc.service || svc.label || "";
+        if (!resolvedName && servicesCatalog && svcId !== undefined && svcId !== null) {
+            const found = servicesCatalog.find(
+                (s) => s && String(s.id ?? "") === String(svcId)
+            );
+            if (found && found.name) {
+                resolvedName = found.name;
+            }
+        }
+        const candidates = [
+            resolvedName,
+            svc.name,
+            svc.service,
+            svc.label,
+            svcId,
+        ].filter(Boolean).map(String);
+        setSelectFromCandidates(select, candidates);
+
+        if (svc.status !== undefined && svc.status !== null) {
+            const rawStatus = String(svc.status).toLowerCase();
+            const statusVal = rawStatus === "online" || rawStatus === "active" || rawStatus === "1" ? "1" : "0";
+            document.getElementById("status").value = statusVal;
+        }
+        if (svc.min_contract_dur) document.getElementById("minContractDur").value = svc.min_contract_dur;
+        if (svc.max_contract_dur) document.getElementById("maxContractDur").value = svc.max_contract_dur;
+        if (svc.subscription_rates) document.getElementById("subscriptionRates").value = svc.subscription_rates;
+        if (svc.pay_as_you_go_rates) document.getElementById("payAsYouGoRates").value = svc.pay_as_you_go_rates;
+        if (svc.settlement_dur) document.getElementById("settlementDur").value = svc.settlement_dur;
+        if (svc.metadata_uri) document.getElementById("sentinelUri").value = svc.metadata_uri;
+        if (svc.metadata_nonce) {
+            document.getElementById("metadataNonceHidden").value = svc.metadata_nonce;
+            document.getElementById("metadataNonceLabel").textContent = svc.metadata_nonce;
+            noncePrimed = true;
+        }
+        setBondLabelForMode();
+        pendingEditService = null;
+    }
+
+    function txSucceeded(tx) {
+        if (!tx) return false;
+        if (tx.exit_code !== 0) return false;
+        if (typeof tx.output === "string") {
+            const m = tx.output.match(/code:\s*(\d+)/);
+            if (m && m[1] && m[1] !== "0") return false;
+        }
+        return true;
+    }
+
+    function bondAndModSucceeded(data) {
+        return txSucceeded(data?.bond_tx) && txSucceeded(data?.mod_tx);
+    }
+
+    window.addEventListener("load", () => {
+        pullPendingEdit();
+        loadServices();
+        loadProviderInfo();
+    });
+</script>
+
+</body>
+</html>

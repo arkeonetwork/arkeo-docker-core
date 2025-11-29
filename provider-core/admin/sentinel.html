@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Provider Sentinel</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="card header-card">
+    <div class="row-between">
+        <h1>Provider Sentinel</h1>
+        <a href="index.html">Back to Admin Home</a>
+    </div>
+</div>
+
+<div class="card">
+    <h2 style="margin-top:0;">Sentinel Settings</h2>
+    <table>
+        <tr>
+            <td class="label">
+                Provider Name
+                <div class="hint">Moniker/label for this sentinel.</div>
+            </td>
+            <td class="value">
+                <input type="text" id="providerName" />
+            </td>
+        </tr>
+        <tr>
+            <td class="label">
+                Moniker
+                <div class="hint">Display moniker for this provider.</div>
+            </td>
+            <td class="value">
+                <input type="text" id="moniker" />
+            </td>
+        </tr>
+        <tr>
+            <td class="label">
+                Website
+                <div class="hint">Public website URL.</div>
+            </td>
+            <td class="value">
+                <input type="text" id="website" />
+            </td>
+        </tr>
+        <tr>
+            <td class="label">
+                Description
+                <div class="hint">Provider description.</div>
+            </td>
+            <td class="value">
+                <input type="text" id="description" />
+            </td>
+        </tr>
+        <tr>
+            <td class="label">
+                Location
+                <div class="hint">Provider location text.</div>
+            </td>
+            <td class="value">
+                <input type="text" id="location" />
+            </td>
+        </tr>
+        <tr>
+            <td class="label">
+                Free Rate Limit
+                <div class="hint">Number of free requests allowed per duration.</div>
+            </td>
+            <td class="value">
+                <input type="text" id="freeRateLimit" />
+            </td>
+        </tr>
+        <tr>
+            <td class="label">
+                Free Rate Limit Duration
+                <div class="hint">Duration window for the free rate limit (e.g. 1m).</div>
+            </td>
+            <td class="value">
+                <input type="text" id="freeRateLimitDuration" />
+            </td>
+        </tr>
+        <tr>
+            <td class="label">
+                Provider Pubkey
+                <div class="hint">Bech32 provider pubkey used on-chain.</div>
+            </td>
+            <td class="value">
+                <span id="providerPubkey">(loading...)</span>
+            </td>
+        </tr>
+        <tr>
+            <td class="label">
+                Listen Address
+                <div class="hint">Sentinel API listen address (read-only).</div>
+            </td>
+            <td class="value"><span id="listenAddr">(loading...)</span></td>
+        </tr>
+        <tr>
+            <td class="label">
+                Sentinel URI
+                <div class="hint">Endpoint exposed by the sentinel (metadata.json).</div>
+            </td>
+            <td class="value"><span id="sentinelUri">(loading...)</span></td>
+        </tr>
+        <tr>
+            <td class="label">
+                Arkeod Node
+                <div class="hint">RPC endpoint sentinel watches for events.</div>
+            </td>
+            <td class="value"><span id="arkeodNode">(loading...)</span></td>
+        </tr>
+        <tr>
+            <td class="label">
+                Hotwallet Key
+                <div class="hint">Configured provider key name.</div>
+            </td>
+            <td class="value"><span id="walletKey">(loading...)</span></td>
+        </tr>
+        <tr>
+            <td class="label">
+                Hotwallet Pubkey
+                <div class="hint">Bech32 pubkey used on-chain.</div>
+            </td>
+            <td class="value"><span id="bech32Pubkey">(loading...)</span></td>
+        </tr>
+        <tr>
+            <td class="label">
+                MetadataNonce
+                <div class="hint">Increment when updating provider metadata.</div>
+            </td>
+            <td class="value"><span id="metadataNonce">(loading...)</span></td>
+        </tr>
+        <tr>
+            <td colspan="2" style="text-align:left; padding-top:12px; border-bottom: none;">
+                <button class="primary" id="saveSentinelBtn" onclick="saveConfig()">Save Sentinel Config</button>
+            </td>
+        </tr>
+    </table>
+    <pre id="saveResult" style="display:none;"></pre>
+
+    <h3>Sentinel YAML</h3>
+    <div class="hint">provider + services from sentinel.yaml</div>
+    <pre id="sentinelYaml">(loading...)</pre>
+
+    <h3>Sentinel Metadata</h3>
+    <div class="hint">metadata.json from the sentinel endpoint</div>
+    <pre id="sentinelMeta">(loading...)</pre>
+    <button class="primary" onclick="loadInfo()">Refresh</button>
+    <pre id="debugInfo">Loading...</pre>
+</div>
+
+<script>
+    async function loadInfo() {
+        const debug = document.getElementById("debugInfo");
+        debug.textContent = "Loading...";
+        try {
+            const [provRes, cfgRes, metaRes] = await Promise.all([
+                fetch("http://localhost:9999/api/provider-info"),
+                fetch("http://localhost:9999/api/sentinel-config"),
+                fetch("http://localhost:9999/api/sentinel-metadata"),
+            ]);
+            const prov = await provRes.json();
+            const cfg = await cfgRes.json();
+            const meta = await metaRes.json();
+            const metaCfg = (meta && meta.metadata && meta.metadata.config) || (meta && meta.config) || {};
+
+            if (provRes.ok) {
+                document.getElementById("sentinelUri").textContent = prov.sentinel_uri || cfg.sentinel_uri_default || "(not set)";
+                document.getElementById("arkeodNode").textContent = prov.arkeod_node || "(not set)";
+                document.getElementById("walletKey").textContent = prov.user || "(not set)";
+                document.getElementById("bech32Pubkey").textContent =
+                    (prov.pubkey && prov.pubkey.bech32) || prov.pubkey_error || "(not set)";
+                document.getElementById("metadataNonce").textContent = prov.metadata_nonce || "(not set)";
+            }
+
+            // YAML view
+            if (cfg.raw) {
+                document.getElementById("sentinelYaml").textContent = cfg.raw;
+            } else {
+                document.getElementById("sentinelYaml").textContent = "(no sentinel.yaml found)";
+            }
+
+            // Inputs
+            const providerCfg = (cfg.config && cfg.config.provider) || {};
+            const apiCfg = (cfg.config && cfg.config.api) || {};
+            const envFile = cfg.env_file || {};
+            const pick = (...vals) => vals.find(v => v !== undefined && v !== null && `${v}`.trim() !== "");
+            const metaFreeRate = pick(metaCfg.free_tier_rate_limit, metaCfg.free_rate_limit, metaCfg.freeRateLimit);
+            const metaFreeDur = pick(metaCfg.free_tier_rate_limit_duration, metaCfg.free_rate_limit_duration, metaCfg.freeRateLimitDuration);
+            document.getElementById("providerName").value = pick(metaCfg.provider_name, providerCfg.name, envFile.PROVIDER_NAME, "");
+            document.getElementById("providerPubkey").textContent = pick(metaCfg.provider_pubkey, providerCfg.pubkey, prov.pubkey && prov.pubkey.bech32, "(not set)");
+            document.getElementById("listenAddr").textContent = pick(metaCfg.port && `0.0.0.0:${metaCfg.port}`, apiCfg.listen_addr, "0.0.0.0:3636");
+            document.getElementById("moniker").value = pick(metaCfg.moniker, envFile.MONIKER, "");
+            document.getElementById("website").value = pick(metaCfg.website, envFile.WEBSITE, "");
+            document.getElementById("description").value = pick(metaCfg.description, envFile.DESCRIPTION, "");
+            document.getElementById("location").value = pick(metaCfg.location, envFile.LOCATION, "");
+            document.getElementById("freeRateLimit").value = pick(metaFreeRate, envFile.FREE_RATE_LIMIT, "");
+            document.getElementById("freeRateLimitDuration").value = pick(metaFreeDur, envFile.FREE_RATE_LIMIT_DURATION, "");
+
+            // metadata view
+            document.getElementById("sentinelMeta").textContent = JSON.stringify(meta, null, 2);
+            debug.textContent = JSON.stringify({ provider_info: prov, sentinel_config: cfg, sentinel_metadata: meta }, null, 2);
+        } catch (e) {
+            debug.textContent = "Failed to load info: " + e;
+        }
+    }
+
+    async function saveConfig() {
+        const btn = document.getElementById("saveSentinelBtn");
+        if (btn) { btn.disabled = true; btn.textContent = "Saving..."; }
+        const payload = {
+            provider_name: document.getElementById("providerName").value.trim(),
+            moniker: document.getElementById("moniker").value.trim(),
+            website: document.getElementById("website").value.trim(),
+            description: document.getElementById("description").value.trim(),
+            location: document.getElementById("location").value.trim(),
+            free_rate_limit: document.getElementById("freeRateLimit").value.trim(),
+            free_rate_limit_duration: document.getElementById("freeRateLimitDuration").value.trim(),
+        };
+        const resEl = document.getElementById("saveResult");
+        resEl.style.display = "block";
+        resEl.textContent = "Saving...";
+        try {
+            const res = await fetch("http://localhost:9999/api/sentinel-config", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+            });
+            const data = await res.json();
+            resEl.textContent = res.ok ? "Saved:\n" + JSON.stringify(data, null, 2) : "Error:\n" + JSON.stringify(data, null, 2);
+            if (res.ok) {
+                loadInfo();
+            }
+        } catch (e) {
+            resEl.textContent = "Request failed: " + e;
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = "Save Sentinel Config"; }
+        }
+    }
+
+    window.addEventListener("load", loadInfo);
+</script>
+
+</body>
+</html>
