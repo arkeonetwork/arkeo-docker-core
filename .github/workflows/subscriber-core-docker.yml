@@ -1,0 +1,42 @@
+name: Build and Publish subscriber-core Docker image
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "subscriber-core/**"
+      - ".github/workflows/subscriber-core-docker.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "subscriber-core/**"
+      - ".github/workflows/subscriber-core-docker.yml"
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push subscriber-core image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./subscriber-core
+          file: ./subscriber-core/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/subscriber-core:latest
+            ghcr.io/${{ github.repository_owner }}/subscriber-core:${{ github.sha }}

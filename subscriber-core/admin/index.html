@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Arkeo Marketplace | Provider Manager</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="icon" href="images/favicon.ico">
+    <link rel="shortcut icon" href="images/favicon.ico">
+</head>
+<body>
+
+<div class="card header-card">
+    <div class="row-between header-top">
+            <div class="header-left">
+                <div class="header-brand-row">
+                    <img src="images/arkeo-logo-200px_1.png" alt="Arkeo" class="header-logo">
+                    <div class="header-brand">
+                        <span class="brand-main">Arkeo Marketplace</span>
+                        <span class="brand-sep">|</span>
+                        <span class="brand-sub">Subscriber Manager</span>
+                    </div>
+                </div>
+                <h1 id="headerMoniker"></h1>
+                <div id="headerDescription" class="muted header-desc"></div>
+            </div>
+            <div class="header-right">
+                <div class="header-line" id="headerPubkey">
+                    <strong>Subscriber Pubkey:</strong>
+                    <span class="inline"><span id="headerPubkeyValue"></span> <button class="copy-btn" onclick="copyPubkeyFromHeader()">Copy</button></span>
+            </div>
+            <div class="header-line" id="headerAddress">
+                <strong>Subscriber Address:</strong>
+                <span class="inline">
+                    <span id="headerAddressValue"></span>
+                    <button class="copy-btn" onclick="copyAddressFromHeader()">Copy</button>
+                </span>
+            </div>
+            <div class="header-line" id="headerBalance"><strong>Subscriber Balance:</strong></div>
+            <div class="header-line muted" id="headerBlock"><strong>Current Block:</strong></div>
+            <div class="header-line fixed-pill"><span id="headerRefreshPill" class="status-badge status-warn hidden">Loading...</span></div>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+</div>
+
+<div class="card footer-card">
+    <div class="footer-links">
+        <div class="footer-brand">
+            <img src="images/arkeo-logo-200px_1.png" alt="Arkeo" class="footer-logo">
+            <span class="footer-title">
+                <span class="brand-main">Arkeo Marketplace</span>
+                <span class="brand-sep">|</span>
+                <span class="brand-sub">Provider Manager</span>
+            </span>
+        </div>
+        <div class="footer-links-right">
+            <div><a href="https://arkeo.network/" target="_blank" rel="noopener">Arkeo Marketplace Website</a></div>
+            <div><a href="https://discord.gg/arkeo" target="_blank" rel="noopener">Arkeo Discord</a></div>
+        </div>
+    </div>
+</div>
+
+<div id="resultModal" class="overlay hidden">
+    <div class="overlay-card modal-card">
+        <h3 id="modalTitle">Result</h3>
+        <pre id="modalBody"></pre>
+        <button class="primary" onclick="closeModal()">OK</button>
+    </div>
+</div>
+
+<script>
+    let currentPubkey = "";
+    let currentAddress = "";
+
+    function formatPubkeyShort(pubkey) {
+        if (!pubkey || pubkey.length < 12) return pubkey || "";
+        // Show first 10 and last 8 for a bit more context
+        return `${pubkey.slice(0, 9)}...${pubkey.slice(-8)}`;
+    }
+
+    function formatAddressShort(addr) {
+        if (!addr || addr.length < 12) return addr || "";
+        return `${addr.slice(0, 6)}...${addr.slice(-8)}`;
+    }
+
+    function formatBalance(balanceObj) {
+        const coins =
+            (balanceObj && balanceObj.balance && balanceObj.balance.result && Array.isArray(balanceObj.balance.result) && balanceObj.balance.result) ||
+            (balanceObj && balanceObj.balance && balanceObj.balance.balances && Array.isArray(balanceObj.balance.balances) && balanceObj.balance.balances) ||
+            [];
+        if (!coins.length) return "0.00000000 uarkeo";
+        const fmtCoin = (c) => {
+            const amount = c.amount || c.Amount || "";
+            const denom = c.denom || c.Denom || "";
+            if (denom === "uarkeo") {
+                const num = parseInt(amount || "0", 10);
+                const val = num / 1e8;
+                return `${val.toLocaleString("en-US", { minimumFractionDigits: 8, maximumFractionDigits: 8 })} ${denom}`;
+            }
+            return `${amount}${denom}`;
+        };
+        return coins.map(fmtCoin).join(", ");
+    }
+
+    function formatBlockHeight(resp) {
+        if (!resp || resp.error || !resp.height) return "(unavailable)";
+        return resp.height.toString();
+    }
+
+    async function refreshHeader() {
+        const loadingPill = document.getElementById("headerRefreshPill");
+        if (loadingPill) loadingPill.style.display = "inline-block";
+        const fetchNoStore = (url) => fetch(url, { cache: "no-store" });
+        const parseSafe = async (settled) => {
+            if (!settled || settled.status !== "fulfilled") return { error: "request failed" };
+            try {
+                if (!settled.value.ok) return { error: `${settled.value.status}` };
+                return await settled.value.json();
+            } catch (err) {
+                return { error: String(err) };
+            }
+        };
+            const [infoRes, balRes, heightRes] = await Promise.allSettled([
+            fetchNoStore("http://localhost:9999/api/subscriber-info"),
+            fetchNoStore("http://localhost:9999/api/balance"),
+            fetchNoStore("http://localhost:9999/api/block-height"),
+        ]);
+        const info = await parseSafe(infoRes);
+        const bal = await parseSafe(balRes);
+        const height = await parseSafe(heightRes);
+
+        const moniker = (info && info.subscriber_name) ||
+            (info && info.provider_metadata && (info.provider_metadata.MONIKER || info.provider_metadata.PROVIDER_NAME)) || "";
+        const desc = "";
+        const bechPub = info && info.pubkey && info.pubkey.bech32;
+        currentPubkey = bechPub || "";
+        currentAddress = (info && info.address) || "";
+
+        const headerMonikerEl = document.getElementById("headerMoniker");
+        const headerDescEl = document.getElementById("headerDescription");
+        const headerPubVal = document.getElementById("headerPubkeyValue");
+        const headerAddrEl = document.getElementById("headerAddress");
+        const headerBalEl = document.getElementById("headerBalance");
+        const headerBlockEl = document.getElementById("headerBlock");
+
+        if (headerMonikerEl) headerMonikerEl.textContent = moniker || "";
+        if (headerDescEl) headerDescEl.textContent = desc || "";
+        if (headerPubVal) headerPubVal.textContent = bechPub ? formatPubkeyShort(bechPub) : "(unavailable)";
+        if (headerAddrEl) {
+            const addrVal = currentAddress || "(unavailable)";
+            const addrSpan = document.getElementById("headerAddressValue");
+            if (addrSpan) addrSpan.textContent = formatAddressShort(addrVal);
+        }
+        if (headerBalEl) headerBalEl.innerHTML = `<strong>Subscriber Balance:</strong> ${formatBalance(bal)}`;
+        if (headerBlockEl) headerBlockEl.innerHTML = `<strong>Current Block:</strong> ${formatBlockHeight(height)}`;
+
+        if (loadingPill) loadingPill.style.display = "none";
+    }
+
+    async function copyPubkeyFromHeader() {
+        const val = currentPubkey || document.getElementById("headerPubkeyValue")?.textContent || "";
+        if (!val || val === "(unavailable)") {
+            showResultModal("Copy Subscriber Pubkey", "Pubkey unavailable");
+            return;
+        }
+        try {
+            await navigator.clipboard.writeText(val);
+            showResultModal("Copy Subscriber Pubkey", `Pubkey copied to clipboard:\n${val}`);
+        } catch (e) {
+            showResultModal("Copy Subscriber Pubkey", "Failed to copy pubkey");
+        }
+    }
+
+    async function copyAddressFromHeader() {
+        const val = currentAddress || document.getElementById("headerAddressValue")?.textContent || "";
+        if (!val || val === "(unavailable)") {
+            showResultModal("Copy Subscriber Address", "Subscriber address unavailable");
+            return;
+        }
+        try {
+            await navigator.clipboard.writeText(val);
+            showResultModal("Copy Subscriber Address", `Address copied to clipboard:\n${val}`);
+        } catch (e) {
+            showResultModal("Copy Subscriber Address", "Failed to copy address");
+        }
+    }
+
+    document.addEventListener("DOMContentLoaded", () => {
+        refreshHeader();
+        // Refresh every 10 seconds to mirror provider UI behavior
+        setInterval(refreshHeader, 10000);
+    });
+
+    function showResultModal(title, body) {
+        const modal = document.getElementById("resultModal");
+        const modalTitle = document.getElementById("modalTitle");
+        const modalBody = document.getElementById("modalBody");
+        if (modalTitle) modalTitle.textContent = title || "Result";
+        if (modalBody) modalBody.textContent = body || "";
+        if (modal) modal.classList.remove("hidden");
+    }
+
+    function closeModal() {
+        const modal = document.getElementById("resultModal");
+        if (modal) modal.classList.add("hidden");
+    }
+</script>
+
+</body>
+</html>

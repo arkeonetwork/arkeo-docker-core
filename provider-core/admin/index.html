@@ -22,12 +22,19 @@
                 <h1 id="headerMoniker"></h1>
                 <div id="headerDescription" class="muted header-desc"></div>
             </div>
-            <div class="header-right">
-                <div class="header-line" id="headerPubkey">
-                    <strong>Provider Pubkey:</strong>
-                    <span class="inline"><span id="headerPubkeyValue"></span> <button class="copy-btn" onclick="copyPubkeyFromHeader()">Copy</button></span>
+        <div class="header-right">
+            <div class="header-line" id="headerPubkey">
+                <strong>Provider Pubkey:</strong>
+                <span class="inline"><span id="headerPubkeyValue"></span> <button class="copy-btn" onclick="copyPubkeyFromHeader()">Copy</button></span>
             </div>
-            <div class="header-line" id="headerBalance"><strong>Hotwallet Balance:</strong></div>
+            <div class="header-line" id="headerAddress">
+                <strong>Provider Address:</strong>
+                <span class="inline">
+                    <span id="headerAddressValue"></span>
+                    <button class="copy-btn" onclick="copyAddressFromHeader()">Copy</button>
+                </span>
+            </div>
+            <div class="header-line" id="headerBalance"><strong>Provider Balance:</strong></div>
             <div class="header-line muted" id="headerBlock"><strong>Current Block:</strong></div>
             <div class="header-line fixed-pill"><span id="headerRefreshPill" class="status-badge status-warn hidden">Loading...</span></div>
         </div>
@@ -186,8 +193,13 @@
                 (prov && prov.pubkey && prov.pubkey.bech32) ||
                 (key && key.pubkey && key.pubkey.bech32) ||
                 "(unknown)";
+            const bech32Address =
+                (prov && (prov.address || prov.addr || prov.provider_address || prov.operator_address)) ||
+                (key && (key.address || key.addr || key.provider_address || key.operator_address)) ||
+                "";
             currentPubkey = bech32Pubkey || "";
             const shortPubkey = formatPubkeyShort(currentPubkey);
+            const shortAddress = formatAddressShort(bech32Address);
             const balanceAmt = formatBalance(bal);
             const blockHeight = formatBlockHeight(height);
             const summaryEl = document.getElementById("providerSummary");
@@ -197,14 +209,20 @@
             const headerBalanceEl = document.getElementById("headerBalance");
             const headerBlockEl = document.getElementById("headerBlock");
             const headerPubEl = document.getElementById("headerPubkey");
+            const headerAddrEl = document.getElementById("headerAddress");
             if (headerMonikerEl) headerMonikerEl.textContent = moniker || "";
             if (headerDescEl) headerDescEl.textContent = desc || "";
-            if (headerBalanceEl) headerBalanceEl.innerHTML = `<strong>Hotwallet Balance:</strong> ${balanceAmt}`;
+            if (headerBalanceEl) headerBalanceEl.innerHTML = `<strong>Provider Balance:</strong> ${balanceAmt}`;
             if (headerBlockEl) headerBlockEl.innerHTML = `<strong>Current Block:</strong> ${blockHeight}`;
             if (headerPubEl) {
                 const valEl = document.getElementById("headerPubkeyValue");
                 if (valEl) valEl.textContent = shortPubkey;
                 headerPubEl.dataset.fullPubkey = currentPubkey;
+            }
+            if (headerAddrEl) {
+                const addrEl = document.getElementById("headerAddressValue");
+                if (addrEl) addrEl.textContent = shortAddress || "(unavailable)";
+                headerAddrEl.dataset.fullAddress = bech32Address || "";
             }
             const svcEl = document.getElementById("providerServices");
             const svcLookup = {};
@@ -377,6 +395,11 @@
         const str = String(pk);
         if (str.length <= 17) return str;
         return `${str.slice(0, 9)}...${str.slice(-8)}`;
+    }
+
+    function formatAddressShort(addr) {
+        if (!addr || addr.length < 12) return addr || "";
+        return `${addr.slice(0, 6)}...${addr.slice(-8)}`;
     }
 
     async function checkEndpoint(statusId, url, opts = {}) {
@@ -574,22 +597,39 @@
         window.location.href = "provider.html";
     }
 
-    function copyPubkeyFromHeader() {
+    async function copyPubkeyFromHeader() {
         const el = document.getElementById("headerPubkey");
         const full = (el && el.dataset.fullPubkey) || currentPubkey || "";
         if (full) {
-            copyPubkey(full);
+            await copyPubkey(full);
         } else {
-            alert("Pubkey unavailable");
+            showResultModal("Copy Provider Pubkey", "Pubkey unavailable");
         }
     }
 
     async function copyPubkey(val) {
         try {
             await navigator.clipboard.writeText(val);
-            alert("Pubkey copied");
+            showResultModal("Copy Provider Pubkey", `Pubkey copied to clipboard:\n${val}`);
         } catch (e) {
-            alert("Failed to copy pubkey");
+            showResultModal("Copy Provider Pubkey", "Failed to copy pubkey");
+        }
+    }
+
+    async function copyAddressFromHeader() {
+        const el = document.getElementById("headerAddress");
+        const full = (el && el.dataset.fullAddress) || "";
+        const fallback = document.getElementById("headerAddressValue")?.textContent || "";
+        const val = full || fallback;
+        if (!val || val === "(unavailable)") {
+            showResultModal("Copy Provider Address", "Provider address unavailable");
+            return;
+        }
+        try {
+            await navigator.clipboard.writeText(val);
+            showResultModal("Copy Provider Address", `Address copied to clipboard:\n${val}`);
+        } catch (e) {
+            showResultModal("Copy Provider Address", "Failed to copy address");
         }
     }
 
