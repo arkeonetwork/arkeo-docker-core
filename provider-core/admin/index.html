@@ -223,7 +223,7 @@
         const sentinelHost = extractHostFromValue(sentinelNode);
         const currentIsLocal = isLocalHost(adminHost);
         const chosen = adminHostOverride || (currentIsLocal ? sentinelHost : "");
-        setAdminHost(chosen || adminHost);
+        // Do not override adminApiBase; keep using the page host for API calls
     }
 
     let providerServicesData = [];
@@ -517,51 +517,38 @@
         return `${addr.slice(0, 6)}...${addr.slice(-8)}`;
     }
 
-    async function checkEndpoint(statusId, url, opts = {}) {
+    function setStatusDot(statusId, state) {
         const badge = document.getElementById(statusId);
         if (!badge) return;
-        if (!url) {
-            badge.className = "status-dot err";
-            return;
-        }
-        const { appendStatusPath = false, pathOverride = "", allowOpaqueOk = false } = opts;
-        let base = url.replace(/\/$/, "");
-        if (base.startsWith("tcp://")) {
-            base = "http://" + base.slice("tcp://".length);
-        }
-        let target = base;
+        let cls = "err";
+        if (state === "ok") cls = "ok";
+        else if (state === "warn") cls = "warn";
+        badge.className = `status-dot ${cls}`;
+    }
+
+    async function refreshEndpointStatuses() {
         try {
-            const parsed = new URL(base);
-            if (pathOverride) {
-                parsed.pathname = pathOverride;
-                target = parsed.toString();
-            } else if (appendStatusPath) {
-                parsed.pathname = parsed.pathname && parsed.pathname !== "/" ? parsed.pathname : "/status";
-                if (!parsed.pathname.endsWith("/status")) parsed.pathname = "/status";
-                target = parsed.toString();
+            const res = await fetch(resolveApi("/api/endpoint-checks"));
+            const data = await res.json();
+            const ep = (data && data.endpoints) || {};
+            const map = [
+                ["arkeod-status", ep.arkeod_status],
+                ["arkeorpc-status", ep.arkeorpc],
+                ["sentinel-external-status", ep.sentinel_external],
+                ["internal-sentinel-status", ep.sentinel_internal],
+                ["internal-adminapi-status", ep.admin_api],
+                ["internal-admin-status", ep.admin_ui],
+            ];
+            for (const [id, entry] of map) {
+                if (!entry) {
+                    setStatusDot(id, "err");
+                    continue;
+                }
+                setStatusDot(id, entry.ok ? "ok" : "err");
             }
         } catch (e) {
-            if (pathOverride) {
-                target = `${base}${pathOverride.startsWith("/") ? pathOverride : `/${pathOverride}`}`;
-            } else if (appendStatusPath && !base.endsWith("/status")) {
-                target = `${base}/status`;
-            }
-        }
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 4000);
-        try {
-            const res = await fetch(target, { method: "GET", mode: "no-cors", signal: controller.signal });
-            clearTimeout(timer);
-            if (res.ok) {
-                badge.className = "status-dot ok";
-            } else if (res.type === "opaque") {
-                badge.className = allowOpaqueOk ? "status-dot ok" : "status-dot warn";
-            } else {
-                badge.className = "status-dot err";
-            }
-        } catch (e) {
-            clearTimeout(timer);
-            badge.className = "status-dot err";
+            const ids = ["arkeod-status", "arkeorpc-status", "sentinel-external-status", "internal-sentinel-status", "internal-adminapi-status", "internal-admin-status"];
+            ids.forEach((id) => setStatusDot(id, "err"));
         }
     }
 
@@ -734,7 +721,6 @@
         const sentinelNode = pickEnv("SENTINEL_NODE") || pickMeta("SENTINEL_NODE");
         const sentinelPort = pickEnv("SENTINEL_PORT") || pickMeta("SENTINEL_PORT") || "3636";
         const resolvedHost = extractHostFromValue(sentinelNode) || adminHost;
-        setAdminHost(resolvedHost);
         const sentinelFull = sentinelNode ? `${sentinelNode}:${sentinelPort}` : `(not set):${sentinelPort}`;
         // Always use loopback for the internal check
         const sentinelInternalUrl = buildBaseUrl("127.0.0.1", sentinelPort);
@@ -742,8 +728,9 @@
         const sentinelExternalUrl = buildBaseUrl(sentinelExternalHost, sentinelPort);
         const adminApiPort = pickEnv("ADMIN_API_PORT") || pickMeta("ADMIN_API_PORT") || "9999";
         const adminPort = pickEnv("ADMIN_PORT") || pickMeta("ADMIN_PORT") || "8080";
-        const adminApiUrl = buildBaseUrl(resolvedHost, adminApiPort);
-        const adminUiUrl = buildBaseUrl(resolvedHost, adminPort);
+        const pageHost = (window.location && window.location.hostname) || adminHost;
+        const adminApiUrl = buildBaseUrl(pageHost, adminApiPort);
+        const adminUiUrl = buildBaseUrl(pageHost, adminPort);
 
         const makeRow = (label, value, statusId) => {
             return `<div class="endpoint-row">
@@ -764,13 +751,8 @@
             makeRow("Admin UI", `${adminUiUrl}`, "internal-admin-status")
         ].join("");
 
-        // Kick off reachability checks
-        checkEndpoint("arkeod-status", arkeodNode, { pathOverride: "/health", allowOpaqueOk: true });
-        checkEndpoint("arkeorpc-status", restApi, { pathOverride: "/cosmos/base/tendermint/v1beta1/node_info", allowOpaqueOk: true });
-        checkEndpoint("sentinel-external-status", sentinelExternalUrl, { pathOverride: "/metadata.json", allowOpaqueOk: true });
-        checkEndpoint("internal-sentinel-status", sentinelInternalUrl, { pathOverride: "/metadata.json", allowOpaqueOk: true });
-        checkEndpoint("internal-adminapi-status", `${adminApiUrl}/api/version`, { allowOpaqueOk: true });
-        checkEndpoint("internal-admin-status", `${adminUiUrl}`, { allowOpaqueOk: true });
+        // Kick off reachability checks from the backend
+        refreshEndpointStatuses();
     }
 
     async function getVersion() {

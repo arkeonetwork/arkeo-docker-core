@@ -81,6 +81,68 @@ ENV_EXPORT_KEYS = [
     "SENTINEL_NODE",
     "SENTINEL_PORT",
 ]
+
+def _normalize_base(url: str | None, default_port: str | None = None, default_scheme: str = "http") -> str:
+    """Return a normalized base URL with scheme/port if provided."""
+    if not url:
+        return ""
+    url = url.strip()
+    # Convert tcp:// to http:// for probing
+    if url.startswith("tcp://"):
+        url = "http://" + url[len("tcp://") :]
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        parsed = None
+    if parsed:
+        scheme = parsed.scheme or default_scheme
+        netloc = parsed.netloc or parsed.path or ""
+        if default_port and ":" not in netloc:
+            netloc = f"{netloc}:{default_port}"
+        return f"{scheme}://{netloc}"
+    # Fallback simple join
+    if default_port and ":" not in url:
+        url = f"{url}:{default_port}"
+    if not url.startswith("http://") and not url.startswith("https://"):
+        url = f"{default_scheme}://{url}"
+    return url
+
+
+def _probe_url(base: str, path_override: str | None = None, timeout: float = 4.0) -> dict:
+    """Probe a URL from inside the container."""
+    base = (base or "").strip()
+    if not base:
+        return {"ok": False, "url": "", "error": "not set"}
+    try:
+        parsed = urllib.parse.urlparse(base)
+        if path_override:
+            parsed = parsed._replace(path=path_override)
+        target = parsed.geturl()
+    except Exception:
+        target = base
+        if path_override:
+            sep = "" if base.endswith("/") or path_override.startswith("/") else "/"
+            target = f"{base}{sep}{path_override}"
+    start = time.time()
+    try:
+        req = urllib.request.Request(target, method="GET")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            status = getattr(resp, "status", None) or resp.getcode()
+            return {
+                "ok": 200 <= (status or 0) < 400,
+                "url": base,
+                "target": target,
+                "status": status,
+                "elapsed_ms": int((time.time() - start) * 1000),
+            }
+    except Exception as e:
+        return {
+            "ok": False,
+            "url": base,
+            "target": target,
+            "error": str(e),
+            "elapsed_ms": int((time.time() - start) * 1000),
+        }
 SENTINEL_EXPORT_PATH = os.getenv("SENTINEL_EXPORT_PATH") or os.path.join(
     os.path.dirname(SENTINEL_ENV_PATH) or ".",
     "sentinel-export.json",
@@ -1345,6 +1407,42 @@ def sentinel_config():
             "provider_export_path": PROVIDER_EXPORT_PATH,
         }
     )
+
+
+@app.get("/api/endpoint-checks")
+def endpoint_checks():
+    """Probe key endpoints from inside the container and report reachability."""
+    env_file = _load_env_file(SENTINEL_ENV_PATH)
+    provider_env = _load_env_file(PROVIDER_ENV_PATH)
+
+    def pick(key: str) -> str:
+        return provider_env.get(key) or env_file.get(key) or os.getenv(key, "")
+
+    sentinel_port = pick("SENTINEL_PORT") or "3636"
+    sentinel_node = pick("SENTINEL_NODE")
+    sentinel_external = _normalize_base(sentinel_node, sentinel_port)
+    sentinel_internal = _normalize_base("127.0.0.1", sentinel_port)
+
+    arkeod_node = pick("EXTERNAL_ARKEOD_NODE") or pick("ARKEOD_NODE")
+    arkeod_base = _normalize_base(arkeod_node)
+
+    rest_api = pick("ARKEO_REST_API_PORT") or pick("PROVIDER_HUB_URI")
+    rest_base = _normalize_base(rest_api)
+
+    admin_api_port = pick("ADMIN_API_PORT") or "9999"
+    admin_port = pick("ADMIN_PORT") or "8080"
+    admin_api_base = _normalize_base("127.0.0.1", admin_api_port)
+    admin_ui_base = _normalize_base("127.0.0.1", admin_port)
+
+    endpoints = {
+        "arkeod_status": _probe_url(arkeod_base, "/status"),
+        "arkeorpc": _probe_url(rest_base, "/cosmos/base/tendermint/v1beta1/node_info"),
+        "sentinel_external": _probe_url(sentinel_external, "/metadata.json"),
+        "sentinel_internal": _probe_url(sentinel_internal, "/metadata.json"),
+        "admin_api": _probe_url(admin_api_base, "/api/version"),
+        "admin_ui": _probe_url(admin_ui_base, "/"),
+    }
+    return jsonify({"endpoints": endpoints})
 
 
 @app.post("/api/provider-export")
