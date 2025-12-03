@@ -134,7 +134,7 @@
 <div id="resultModal" class="overlay hidden">
     <div class="overlay-card modal-card">
         <h3 id="modalTitle">Result</h3>
-        <pre id="modalBody"></pre>
+        <div id="modalBody" class="modal-body"></div>
         <button class="primary" onclick="closeModal()">OK</button>
     </div>
 </div>
@@ -394,6 +394,8 @@
         // Refresh every 10 seconds to mirror provider UI behavior
         setInterval(refreshHeader, 10000);
         loadListeners();
+        // Keep listener table/logs fresh for dashboard view; skip while editing to avoid clobbering form state
+        setInterval(() => { if (!listenersEditingId) loadListeners(); }, 5000);
         refreshServiceTypes(false);
         // try to populate metrics from initial cache-refresh data if present
         updateMetrics();
@@ -422,6 +424,11 @@
     function updateModalBody(body) {
         const modalBody = document.getElementById("modalBody");
         if (modalBody) modalBody.textContent = body || "";
+    }
+
+    function updateModalBodyHtml(body) {
+        const modalBody = document.getElementById("modalBody");
+        if (modalBody) modalBody.innerHTML = body || "";
     }
 
     let syncingLocal = false;
@@ -697,9 +704,13 @@
             const portSafe = escapeHtml(l.port ?? "");
             const statusSafe = escapeHtml(l.status || "");
             const svcLabel = l.service_description || formatServiceLabel(l.service_id);
-            const svcSelect = buildServiceSelect(l.service_id, `editService-${l.id}`);
+            const svcSelect = `<div class="muted">
+                <div>${escapeHtml(svcLabel || "—")}</div>
+                <div class="muted small">Service type cannot be changed after creation.</div>
+                <input type="hidden" id="editService-${l.id}" value="${escapeHtml(l.service_id || "")}">
+            </div>`;
             const statusSelect = buildStatusSelect(l.status, `editStatus-${l.id}`);
-            const topServices = Array.isArray(l.top_services) ? l.top_services : [];
+            const topServices = dedupTopServices(Array.isArray(l.top_services) ? l.top_services : []);
             const whitelist = l.whitelist_ips ? escapeHtml(l.whitelist_ips) : "0.0.0.0 (all)";
             const hostForListener = window.location.hostname || "localhost";
             const protoForListener = (window.location.protocol || "").startsWith("https") ? "https" : "http";
@@ -799,7 +810,7 @@
                 <td class="mono">${portSafe || "–"}</td>
                 <td class="listener-actions-cell col-actions">
                     <button class="btn-ghost" onclick="testListener('${l.id}')">Test</button>
-                    <button class="btn-ghost" onclick="refreshTopServices('${l.id}')">Refresh</button>
+                    <button class="btn-ghost" onclick="pollListener('${l.id}')">Poll</button>
                     <button class="primary" onclick="editListener('${l.id}')">Edit</button>
                     <button class="primary danger-btn" onclick="deleteListener('${l.id}')">Delete</button>
                 </td>
@@ -891,12 +902,17 @@
     }
 
     async function saveListener(id) {
-        const svcId = document.getElementById(`editService-${id}`)?.value || "";
+        const svcIdInput = document.getElementById(`editService-${id}`);
+        const svcId = (svcIdInput && svcIdInput.value) || "";
         const status = document.getElementById(`editStatus-${id}`)?.value || "";
         const whitelist = document.getElementById(`editWhitelist-${id}`)?.value || "";
         const current = listenersCache.find((l) => String(l.id) === String(id));
         const body = { status, whitelist_ips: whitelist };
-        if (svcId) body.service_id = svcId;
+        if (svcId) {
+            body.service_id = svcId;
+        } else if (current && current.service_id) {
+            body.service_id = current.service_id;
+        }
         if (current && Array.isArray(current.top_services)) {
             body.top_services = current.top_services;
         }
@@ -1004,27 +1020,40 @@
         listenersCache.forEach((l) => fetchListenerLog(l.id, `log-${l.id}`));
     }
 
-    async function testListener(id) {
+    async function runListenerTests(id, runs, titlePrefix, refreshAfter = false) {
         const listener = listenersCache.find((l) => String(l.id) === String(id));
         const port = listener && listener.port ? listener.port : "–";
         const svcLabel = listener
             ? (listener.service_description || formatServiceLabel(listener.service_id) || listener.service_name || listener.service_id || "")
             : "";
-        const initialBody = `
-<div>Testing listener...</div>
-<div class="muted small">Port: ${escapeHtml(String(port))}${svcLabel ? ` • Service: ${escapeHtml(String(svcLabel))}` : ""}</div>
-<div class="muted small">Please wait...</div>`;
-        showResultModal("Test Listener", initialBody, true);
-        try {
-            const res = await fetch(apiUrl(`/api/listeners/${encodeURIComponent(id)}/test`), {
-                method: "GET",
-                cache: "no-store",
-            });
-            const data = await res.json().catch(() => ({}));
-            const cmd = data && data.command ? data.command : "";
-            if (!res.ok || (data && data.error && data.ok === false)) {
-                const err = (data && (data.detail || data.error)) || res.statusText || res.status;
-                const resp = data && data.response;
+        const header = `
+<div>${escapeHtml(titlePrefix || "Testing")} listener (${runs} runs)...</div>
+<div class="muted small">Port: ${escapeHtml(String(port))}${svcLabel ? ` • Service: ${escapeHtml(String(svcLabel))}` : ""}</div>`;
+        let summaryHtml = `<div class="muted small">Please wait...</div>`;
+        let logText = "";
+        const logContainer = () => document.getElementById("testLogPre");
+        const summaryContainer = () => document.getElementById("testSummary");
+        // open modal shell first
+        showResultModal("Test Listener", "", true);
+        const renderShell = () => {
+            const shell = `${header}<div id="testSummary" class="muted small">${summaryHtml}</div><pre id="testLogPre" class="mono" style="max-height:50vh;overflow:auto;"></pre>`;
+            updateModalBodyHtml(shell);
+        };
+        renderShell();
+        const results = [];
+        const successes = [];
+        const failures = [];
+        for (let i = 1; i <= runs; i++) {
+            try {
+                const res = await fetch(apiUrl(`/api/listeners/${encodeURIComponent(id)}/test`), {
+                    method: "GET",
+                    cache: "no-store",
+                });
+                const data = await res.json().catch(() => ({}));
+                const cmd = data && data.command ? data.command : "";
+                const ok = res.ok && !(data && data.error && data.ok === false);
+                const err = ok ? null : (data && (data.detail || data.error)) || res.statusText || res.status;
+                let resp = data && data.response;
                 let respPretty = resp || "(no data)";
                 try {
                     if (typeof resp === "string") {
@@ -1035,37 +1064,176 @@
                 } catch (e) {
                     respPretty = resp || "(no data)";
                 }
-                const body = `
-<div>Command:</div>
-<pre class="mono">${escapeHtml(cmd)}</pre>
-<div>Error:</div>
-<pre class="mono">${escapeHtml(String(err))}</pre>
-<div>Response Body:</div>
-<pre class="mono">${respPretty}</pre>`;
-                showResultModal("Test Listener", body, true);
-                return;
-            }
-            const resp = data && data.response;
-            let respPretty = resp || "(no data)";
-            try {
-                if (typeof resp === "string") {
-                    respPretty = JSON.stringify(JSON.parse(resp), null, 2);
-                } else if (resp && typeof resp === "object") {
-                    respPretty = JSON.stringify(resp, null, 2);
+                results.push({
+                    idx: i,
+                    cmd,
+                    err,
+                    respPretty,
+                });
+                if (err) {
+                    failures.push(i);
+                } else {
+                    successes.push(i);
                 }
             } catch (e) {
-                respPretty = resp || "(no data)";
+                results.push({
+                    idx: i,
+                    cmd: "",
+                    err: String(e),
+                    respPretty: "(no data)",
+                });
+                failures.push(i);
             }
-            const body = `
-<div>Command:</div>
-<pre class="mono">${escapeHtml(cmd)}</pre>
-<div>Response:</div>
-<pre class="mono">${respPretty}</pre>`;
-            showResultModal("Test Listener", body, true);
-            await loadListeners();
-        } catch (err) {
-            showResultModal("Test Listener", `Failed to test listener: ${escapeHtml(String(err))}`);
+            summaryHtml = `<div class="muted small">Success: ${successes.length ? successes.join(", ") : "0"} | Failed: ${failures.length ? failures.join(", ") : "0"}</div>`;
+            const summaryEl = summaryContainer();
+            if (summaryEl) summaryEl.innerHTML = summaryHtml;
+            const block = [
+                `--- Run ${i} ---`,
+                `Command: ${results[results.length - 1].cmd || ""}`,
+                results[results.length - 1].err ? `Error: ${results[results.length - 1].err}` : `Response:\n${results[results.length - 1].respPretty}`
+            ].join("\n");
+            logText = logText ? `${logText}\n\n${block}` : block;
+            const pre = logContainer();
+            if (pre) {
+                pre.textContent = logText;
+                pre.scrollTop = pre.scrollHeight;
+            }
         }
+        // Final summary update
+        const summaryEl = summaryContainer();
+        if (summaryEl) summaryEl.innerHTML = `<div class="muted small">Test complete.</div>${summaryHtml}`;
+        const pre = logContainer();
+        if (pre) {
+            pre.textContent = logText;
+            pre.scrollTop = pre.scrollHeight;
+        }
+        if (refreshAfter) {
+            await loadListeners();
+        }
+    }
+
+    function dedupTopServices(list) {
+        const seen = new Set();
+        const out = [];
+        for (const item of Array.isArray(list) ? list : []) {
+            const key = `${item?.provider_pubkey || ""}::${item?.service_id || item?.service || ""}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            out.push(item);
+        }
+        return out;
+    }
+
+    async function testListener(id) {
+        await runListenerTests(id, 3, "Testing", true);
+    }
+
+    async function pollListener(id) {
+        const listener = listenersCache.find((l) => String(l.id) === String(id));
+        const top = listener && Array.isArray(listener.top_services) ? dedupTopServices(listener.top_services) : [];
+        // modal shell
+        const port = listener?.port ? listener.port : "–";
+        const svcLabel = listener
+            ? (listener.service_description || formatServiceLabel(listener.service_id) || listener.service_name || listener.service_id || "")
+            : "";
+        let pollLogText = "";
+        const logEl = () => document.getElementById("pollLogPre");
+        const summaryEl = () => document.getElementById("pollSummary");
+        const renderPollShell = (summaryText = "Starting poll...") => {
+            const header = `<div>Polling listener...</div><div class="muted small">Port: ${escapeHtml(String(port))}${svcLabel ? ` • Service: ${escapeHtml(String(svcLabel))}` : ""}</div>`;
+            const body = `${header}<div id="pollSummary" class="muted small">${escapeHtml(summaryText)}</div><pre id="pollLogPre" class="mono" style="max-height:50vh;overflow:auto;"></pre>`;
+            updateModalBodyHtml(body);
+        };
+        const appendPollLog = (line) => {
+            pollLogText = pollLogText ? `${pollLogText}\n${line}` : line;
+            const pre = logEl();
+            if (pre) {
+                pre.textContent = pollLogText;
+                pre.scrollTop = pre.scrollHeight;
+            }
+        };
+        showResultModal("Poll Listener", "", true);
+        renderPollShell();
+        if (!top.length) {
+            appendPollLog("No providers to poll; running a single test instead.");
+            await testListener(id);
+            return;
+        }
+        const primary = top[0] || {};
+        const inferredSvc = listener?.service_id || listener?.service || primary.service_id || primary.service || "";
+        const basePayload = {
+            status: "active",
+            service_id: inferredSvc,
+            whitelist_ips: listener?.whitelist_ips || "",
+        };
+        let workingTop = dedupTopServices(JSON.parse(JSON.stringify(top)));
+        for (const ts of workingTop) {
+            const providerLabel = ts?.provider_moniker || ts?.provider_pubkey || "(unknown)";
+            appendPollLog(`Provider: ${providerLabel} (${ts?.provider_pubkey || "n/a"})`);
+            // reorder so this provider is first
+            const reordered = dedupTopServices([ts, ...workingTop.filter((t) => {
+                const keyT = `${t?.provider_pubkey || ""}::${t?.service_id || t?.service || ""}`;
+                const keyTs = `${ts?.provider_pubkey || ""}::${ts?.service_id || ts?.service || ""}`;
+                return keyT !== keyTs;
+            })]);
+            try {
+                await fetch(apiUrl(`/api/listeners/${encodeURIComponent(id)}`), {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ ...basePayload, top_services: reordered }),
+                });
+                appendPollLog("  reordered list to prioritize this provider");
+            } catch (e) {
+                // ignore reorder errors, proceed
+                appendPollLog(`  reorder failed: ${e}`);
+            }
+            // run a few tests for this provider, respecting qpm if present
+            const qpm = ts && ts.queries_per_minute ? Number(ts.queries_per_minute) : 0;
+            const spacingMs = qpm > 0 ? Math.max(200, Math.round(60000 / qpm)) : 400;
+            const runs = 3;
+            for (let i = 0; i < runs; i++) {
+                try {
+                    const res = await fetch(apiUrl(`/api/listeners/${encodeURIComponent(id)}/test`), { method: "GET", cache: "no-store" });
+                    const ok = res.ok;
+                    const data = await res.json().catch(() => ({}));
+                    const err = !ok ? (data && (data.detail || data.error)) || res.statusText || res.status : "";
+                    appendPollLog(`  test ${i + 1}/${runs}: ${ok ? "ok" : `error ${err}`}`);
+                } catch (e) {
+                    appendPollLog(`  test ${i + 1}/${runs}: error ${e}`);
+                }
+                await new Promise(res => setTimeout(res, spacingMs));
+            }
+            await loadListeners();
+            const refreshed = listenersCache.find((l) => String(l.id) === String(id));
+            if (refreshed && Array.isArray(refreshed.top_services)) {
+                workingTop = dedupTopServices(JSON.parse(JSON.stringify(refreshed.top_services)));
+            }
+        }
+        // sort by cheapest then lowest latency using the freshest cache after polling
+        const latest = listenersCache.find((l) => String(l.id) === String(id));
+        const latestTop = dedupTopServices(latest && Array.isArray(latest.top_services) ? latest.top_services : []);
+        const sorted = [...latestTop].sort((a, b) => {
+            const rateA = (a?.pay_as_you_go_rate && a.pay_as_you_go_rate.amount !== undefined) ? Number(a.pay_as_you_go_rate.amount) : Number.POSITIVE_INFINITY;
+            const rateB = (b?.pay_as_you_go_rate && b.pay_as_you_go_rate.amount !== undefined) ? Number(b.pay_as_you_go_rate.amount) : Number.POSITIVE_INFINITY;
+            if (rateA !== rateB) return rateA - rateB;
+            const rtA = a?.rt_avg_ms !== undefined ? Number(a.rt_avg_ms) : Number.POSITIVE_INFINITY;
+            const rtB = b?.rt_avg_ms !== undefined ? Number(b.rt_avg_ms) : Number.POSITIVE_INFINITY;
+            return rtA - rtB;
+        });
+        try {
+            await fetch(apiUrl(`/api/listeners/${encodeURIComponent(id)}`), {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ ...basePayload, top_services: sorted }),
+            });
+            appendPollLog("Sorted providers by price then latency and saved.\n\nPolling and sorting complete.");
+        } catch (e) {
+            /* ignore */
+            appendPollLog(`Failed to save sorted providers: ${e}`);
+        }
+        await loadListeners();
+        const summary = summaryEl();
+        if (summary) summary.innerHTML = `Poll complete.`;
     }
 
     async function refreshTopServices(id) {

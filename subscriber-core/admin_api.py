@@ -2123,6 +2123,41 @@ class PaygProxyHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+    def _near_log_rotation(self) -> bool:
+        """Return True if a rotation would occur for this log write."""
+        logger = getattr(self.server, "logger", None)
+        if not logger:
+            return False
+        try:
+            record = logger.makeRecord(logger.name, logging.INFO, __file__, 0, "probe", None, None)
+            for h in logger.handlers:
+                if isinstance(h, RotatingFileHandler):
+                    try:
+                        if h.shouldRollover(record):
+                            return True
+                    except Exception:
+                        continue
+        except Exception:
+            return False
+        return False
+
+    def _should_record_metrics(self, code: int, auto_created: bool) -> bool:
+        """Gate metric recording to avoid skew."""
+        if auto_created:
+            return False
+        if not (200 <= int(code) < 300):
+            return False
+        # skip first request after start to avoid cold-start skew
+        if not hasattr(self.server, "metrics_warm"):
+            self.server.metrics_warm = False
+        if not self.server.metrics_warm:
+            self.server.metrics_warm = True
+            return False
+        # avoid logging a sample if log rotation is imminent
+        if self._near_log_rotation():
+            return False
+        return True
+
     def _client_ip(self, trust_forwarded: bool) -> str:
         if trust_forwarded:
             xr = self.headers.get("X-Real-Ip", "")
@@ -2247,6 +2282,7 @@ class PaygProxyHandler(BaseHTTPRequestHandler):
             sentinel = cand.get("sentinel_url") or cfg.get("provider_sentinel_api") or SENTINEL_URI_DEFAULT
             if not provider_filter:
                 continue
+            auto_created_this_request = False
             self._log("info", f"candidate {idx}/{len(candidates)} provider={provider_filter} sentinel={sentinel}")
 
             # cooldown check
@@ -2292,6 +2328,7 @@ class PaygProxyHandler(BaseHTTPRequestHandler):
                     cfg_override["create_duration"] = cur_dur
                 except Exception:
                     pass
+                auto_created_this_request = True
                 txh, tx_raw, dep_used = _create_contract_now(cfg_override, client_pub)
                 self._log("info", f"open-contract attempt deposit={dep_used} rate={cfg_override.get('create_rate', cfg.get('create_rate', PROXY_CREATE_RATE))} dur={cfg_override.get('create_duration', cfg.get('create_duration', PROXY_CREATE_DURATION))} qpm={cfg_override.get('create_qpm', cfg.get('create_qpm', PROXY_CREATE_QPM))} settlement={cfg_override.get('create_settlement', cfg.get('create_settlement', PROXY_CREATE_SETTLEMENT))} provider={provider_filter}")
                 if tx_raw:
@@ -2382,6 +2419,8 @@ class PaygProxyHandler(BaseHTTPRequestHandler):
             if total_time_sec > response_time_sec:
                 response_time_sec = total_time_sec
 
+            self._log("info", f"timings total_ms={int(total_time_sec*1000)} forward_ms={int((time.time()-t0)*1000)} auto_create={auto_created_this_request}")
+
             meta_full = _build_arkeo_meta_clean(active, nonce, svc_id, service, provider_filter, contract_client, sentinel, response_time_sec)
             self.server.last_code = code
             self.server.last_nonce = nonce
@@ -2396,7 +2435,9 @@ class PaygProxyHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
             try:
-                _update_top_service_metrics(cfg.get("listener_id"), provider_filter, response_time_sec)
+                # Do not include auto-create paths in latency stats; they skew averages
+                if self._should_record_metrics(code, auto_created_this_request):
+                    _update_top_service_metrics(cfg.get("listener_id"), provider_filter, response_time_sec)
             except Exception:
                 pass
             self.server.active_contract = active

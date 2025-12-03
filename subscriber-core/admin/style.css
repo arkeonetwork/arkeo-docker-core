@@ -653,14 +653,22 @@ pre {
 .modal-card {
     max-width: 640px;
     width: 90%;
+    padding-bottom: 16px;
 }
-.modal-card pre {
-    max-height: 50vh;
+.modal-body {
     text-align: left;
-}
-.modal-card #modalBody,
-.modal-card pre#modalBody {
-    text-align: left;
+    white-space: pre-wrap;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    overflow: visible;
+    font-family: Menlo, Monaco, Consolas, "Courier New", monospace;
+    font-size: 13px;
+    line-height: 1.4;
+    }
+.modal-card .primary {
+    margin-top: 12px;
 }
 
 .hidden { display: none; }
