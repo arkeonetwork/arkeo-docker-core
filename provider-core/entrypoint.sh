@@ -55,6 +55,7 @@ echo "  ADMIN_PORT            = $ADMIN_PORT"
 # Ensure home directory exists
 mkdir -p "$ARKEOD_HOME"
 mkdir -p /app/config
+mkdir -p /app/cache
 # Ensure supervisor runtime dirs exist (for supervisorctl socket/logs)
 mkdir -p /var/run /var/log/supervisor
 

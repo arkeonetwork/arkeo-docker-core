@@ -23,6 +23,38 @@
         <div class="header-desc muted">The Marketplace for Decentralized Data.</div>
     </div>
 
+    <div class="card">
+        <div class="row-between" style="align-items:center;">
+            <h2>Arkeo Data Marketplace</h2>
+        </div>
+        <div class="metrics-grid header-metrics">
+            <div class="metric-card">
+                <div class="metric-label">Active Providers</div>
+                <div class="metric-value" id="metricProviders">–</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Active Services</div>
+                <div class="metric-value" id="metricServices">–</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Contracts</div>
+                <div class="metric-value" id="metricContracts">–</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Subscribers</div>
+                <div class="metric-value" id="metricSubscribers">–</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Supported Chains</div>
+                <div class="metric-value" id="metricNodeTypes">–</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Active Validators</div>
+                <div class="metric-value" id="metricValidators">–</div>
+            </div>
+        </div>
+    </div>
+
     <div class="card body-card"></div>
 
     <div class="card footer-card">
@@ -51,6 +83,7 @@
     </div>
 
 </div>
+
 <script>
     const API_PORT_DEFAULT = 9996;
     const apiPort = new URLSearchParams(window.location.search).get("api_port") || window.API_PORT || API_PORT_DEFAULT;
@@ -59,6 +92,7 @@
 
     async function refreshLogs() {
         const box = document.getElementById("debugLogBox");
+        if (!box) return;
         box.textContent = "Loading logs...";
         try {
             const resp = await fetch(apiUrl("/api/logs"), { cache: "no-store" });
@@ -78,7 +112,110 @@
         }
     }
 
-    refreshLogs();
+    function updateMetrics(results, overrides) {
+        const mProv = document.getElementById("metricProviders");
+        const mSvc = document.getElementById("metricServices");
+        const mCon = document.getElementById("metricContracts");
+        const mSub = document.getElementById("metricSubscribers");
+        const mNode = document.getElementById("metricNodeTypes");
+        const mVals = document.getElementById("metricValidators");
+        const getCount = (payload, keys) => {
+            if (!payload || typeof payload !== "object") return null;
+            const d = payload.data || payload;
+            for (const k of keys) {
+                const v = d[k];
+                if (Array.isArray(v)) return v.length;
+            }
+            return null;
+        };
+        let activeSvcCount = null;
+        if (results) {
+            if ("active_services" in results) {
+                const d = results["active_services"].data || results["active_services"];
+                if (d && Array.isArray(d.active_services)) activeSvcCount = d.active_services.length;
+            }
+            if (activeSvcCount === null && "provider-services" in results) {
+                const c = getCount(results["provider-services"], ["providers", "provider"]);
+                if (c !== null) activeSvcCount = c;
+            }
+            if (mProv && "provider-services" in results) {
+                const c = getCount(results["provider-services"], ["providers", "provider"]);
+                if (c !== null) mProv.textContent = c;
+            }
+            if (mProv && "active_providers" in results) {
+                const d = results["active_providers"].data || results["active_providers"];
+                if (d && Array.isArray(d.providers)) {
+                    mProv.textContent = d.providers.length;
+                }
+            }
+            if (mCon && "provider-contracts" in results) {
+                const c = getCount(results["provider-contracts"], ["contracts", "contract"]);
+                if (c !== null) mCon.textContent = c;
+            }
+            if (mSub && "subscribers" in results) {
+                const d = results["subscribers"].data || results["subscribers"];
+                if (d && Array.isArray(d.subscribers)) mSub.textContent = d.subscribers.length;
+            }
+            if (mSvc && "service-types" in results) {
+                const c = getCount(results["service-types"], ["services", "service", "result", "data"]);
+                if (mNode && c !== null) mNode.textContent = c;
+            }
+            if (mNode && "active_service_types" in results) {
+                const d = results["active_service_types"].data || results["active_service_types"];
+                const list = d && Array.isArray(d.active_service_types) ? d.active_service_types : [];
+                if (Array.isArray(list)) mNode.textContent = list.length;
+            }
+            if (mProv && "providers" in results) {
+                const d = results["providers"];
+                if (d && d.data && Array.isArray(d.data.providers)) {
+                    mProv.textContent = d.data.providers.length;
+                }
+            }
+        }
+        if (mSvc && activeSvcCount !== null) {
+            mSvc.textContent = activeSvcCount;
+        }
+        if (overrides) {
+            if (mProv && overrides.providers !== undefined) mProv.textContent = overrides.providers;
+            if (mSvc && overrides.services !== undefined) mSvc.textContent = overrides.services;
+            if (mCon && overrides.contracts !== undefined) mCon.textContent = overrides.contracts;
+            if (mSub && overrides.subscribers !== undefined) mSub.textContent = overrides.subscribers;
+            if (mNode && overrides.nodeTypes !== undefined) mNode.textContent = overrides.nodeTypes;
+            if (mVals && overrides.validators_active !== undefined) mVals.textContent = overrides.validators_active;
+        }
+        if (mProv && !mProv.textContent) mProv.textContent = "–";
+        if (mSvc && !mSvc.textContent) mSvc.textContent = "–";
+        if (mCon && !mCon.textContent) mCon.textContent = "–";
+        if (mSub && !mSub.textContent) mSub.textContent = "–";
+        if (mNode && !mNode.textContent) mNode.textContent = "–";
+        if (mVals && !mVals.textContent) mVals.textContent = "–";
+    }
+
+    async function pollSyncStatus() {
+        try {
+            const countsRes = await fetch(apiUrl("/api/cache-counts"), { cache: "no-store" });
+            if (countsRes.ok) {
+                const counts = await countsRes.json();
+                updateMetrics(null, {
+                    providers: counts.active_providers,
+                    services: counts.active_services,
+                    contracts: counts.contracts,
+                    subscribers: counts.subscribers,
+                    nodeTypes: counts.supported_chains,
+                    validators_active: counts.validators_active,
+                });
+            }
+        } catch (e) {
+            // ignore fetch errors; will retry on next poll
+        }
+    }
+
+    document.addEventListener("DOMContentLoaded", () => {
+        updateMetrics();
+        refreshLogs();
+        pollSyncStatus();
+        setInterval(pollSyncStatus, 5000);
+    });
 </script>
 </body>
 </html>

@@ -35,6 +35,8 @@ try:
 except ValueError:
     CACHE_FETCH_INTERVAL = 300
 STATUS_FILE = os.path.join(CACHE_DIR, "_sync_status.json")
+# Chain parameter minimum bond for active services (100,000,000 uarkeo)
+BOND_THRESHOLD_UARKEO = 100_000_000
 
 
 def run_list(cmd: List[str]) -> Tuple[int, str]:
@@ -103,6 +105,7 @@ def build_commands() -> Dict[str, List[str]]:
     return {
         "provider-services": [*base, "query", "arkeo", "list-providers", "-o", "json"],
         "provider-contracts": [*base, "query", "arkeo", "list-contracts", "-o", "json"],
+        "validators": [*base, "query", "staking", "validators", "--page-limit", "1000", "--page-count-total", "--status", "BOND_STATUS_BONDED", "-o", "json"],
         # services/types are fetched via REST API (no pagination)
         "service-types": [],
     }
@@ -177,6 +180,68 @@ def _is_external(uri: str | None) -> bool:
         return True
     except Exception:
         return False
+
+
+def _parse_int_value(val: Any) -> int | None:
+    """Return an integer from various representations (raw int, numeric string, or coin string)."""
+    if isinstance(val, bool):
+        return None
+    if isinstance(val, (int, float)):
+        try:
+            return int(val)
+        except (TypeError, ValueError):
+            return None
+    if isinstance(val, str):
+        digits = ""
+        for ch in val:
+            if ch.isdigit():
+                digits += ch
+            elif digits:
+                # stop at first non-digit after we started collecting
+                break
+        if digits:
+            try:
+                return int(digits)
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _bond_amount_uarkeo(entry: Dict[str, Any]) -> int:
+    """Extract a bond amount in uarkeo (best-effort)."""
+    bond = entry.get("bond")
+    if isinstance(bond, dict):
+        denom = bond.get("denom") or bond.get("Denom")
+        amount_val = bond.get("amount") or bond.get("Amount")
+        if denom and str(denom).lower() != "uarkeo":
+            return 0
+        amt = _parse_int_value(amount_val)
+        return amt if isinstance(amt, int) else 0
+    amt = _parse_int_value(bond)
+    return amt if isinstance(amt, int) else 0
+
+
+def _min_payg_rate(raw: Dict[str, Any]) -> tuple[int | None, str | None]:
+    """Return (amount_int, denom) for the lowest pay_as_you_go_rate entry, or (None, None) if missing."""
+    if not isinstance(raw, dict):
+        return None, None
+    rates = raw.get("pay_as_you_go_rate") or raw.get("pay_as_you_go_rates") or []
+    if not isinstance(rates, list):
+        return None, None
+    best_amt = None
+    best_denom = None
+    for r in rates:
+        if not isinstance(r, dict):
+            continue
+        denom = r.get("denom") or r.get("Denom")
+        amt = r.get("amount") or r.get("Amount")
+        amt_int = _parse_int_value(amt)
+        if amt_int is None:
+            continue
+        if best_amt is None or amt_int < best_amt:
+            best_amt = amt_int
+            best_denom = denom
+    return best_amt, best_denom
 
 
 def build_providers_metadata(provider_payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -326,6 +391,12 @@ def build_active_services(provider_services_payload: Dict[str, Any], active_prov
         status_str = str(status_val).strip().lower() if status_val is not None else ""
         if status_str != "online" and status_val not in (1, True, "1"):
             continue
+        bond_amt = _bond_amount_uarkeo(entry)
+        if bond_amt < BOND_THRESHOLD_UARKEO:
+            continue
+        payg_amt, payg_denom = _min_payg_rate(entry)
+        if payg_amt is None or payg_amt <= 0:
+            continue
         mu = entry.get("metadata_uri") or entry.get("metadataUri")
         if not mu or not _is_external(mu):
             continue
@@ -335,6 +406,7 @@ def build_active_services(provider_services_payload: Dict[str, Any], active_prov
                 "service_id": entry.get("service_id") or entry.get("id") or entry.get("service"),
                 "service": entry.get("service") or entry.get("name"),
                 "metadata_uri": mu,
+                "pay_as_you_go_rate": {"amount": payg_amt, "denom": payg_denom},
                 "raw": entry,
             }
         )
@@ -468,6 +540,7 @@ def write_cache(name: str, payload: Dict[str, Any]) -> None:
 def fetch_once(commands: Dict[str, List[str]], record_status: bool = False) -> Dict[str, Dict[str, Any]]:
     results: Dict[str, Dict[str, Any]] = {}
     start_ts = timestamp()
+    print(f"[cache] sync started at {start_ts}", flush=True)
     if record_status:
         mark_sync_start(start_ts)
     ok = True
@@ -512,6 +585,9 @@ def fetch_once(commands: Dict[str, List[str]], record_status: bool = False) -> D
     finally:
         if record_status:
             mark_sync_end(ok=ok, error=error_msg)
+        end_ts = timestamp()
+        status = "success" if ok else f"failed ({error_msg})"
+        print(f"[cache] sync completed at {end_ts} [{status}]", flush=True)
     return results
 
 

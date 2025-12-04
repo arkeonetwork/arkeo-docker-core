@@ -30,7 +30,7 @@ ADMIN_API_PORT=9999
 ## Run the latest Provider Core docker image
 ```bash
 # create host dirs
-mkdir -p ~/provider-core/config ~/provider-core/arkeo
+mkdir -p ~/provider-core/config ~/provider-core/cache ~/provider-core/arkeo
 
 # stop/remove any existing container with this name
 docker stop provider-core || true
@@ -45,6 +45,7 @@ docker run -d --name provider-core --restart=unless-stopped \
   -e ENV_ADMIN_PORT=8080 \
   -p 8080:8080 -p 3636:3636 -p 9999:9999 \
   -v ~/provider-core/config:/app/config \
+  -v ~/subscriber-core/cache:/app/cache \
   -v ~/provider-core/arkeo:/root/.arkeo \
   ghcr.io/arkeonetwork/provider-core:latest
 ```

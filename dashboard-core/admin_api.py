@@ -334,6 +334,9 @@ def cache_refresh():
         subscribers_cache = _load_cached("subscribers")
         if subscribers_cache:
             results["subscribers"] = {"data": subscribers_cache, "exit_code": 0}
+        validators_cache = _load_cached("validators")
+        if validators_cache:
+            results["validators"] = {"data": validators_cache, "exit_code": 0}
         return jsonify({"status": "ok", "results": results})
     except Exception as e:
         return jsonify({"error": "cache_refresh_failed", "detail": str(e)}), 500
@@ -368,6 +371,7 @@ def cache_counts():
     contracts = _safe_load("provider-contracts")
     service_types = _safe_load("service-types")
     subscribers_cache = _safe_load("subscribers")
+    validators_cache = _safe_load("validators")
 
     counts = {
         "active_providers": 0,
@@ -375,6 +379,8 @@ def cache_counts():
         "contracts": 0,
         "supported_chains": 0,
         "subscribers": 0,
+        "validators_bonded": 0,
+        "validators_active": 0,
     }
 
     providers_list = active_providers.get("providers") or []
@@ -401,6 +407,17 @@ def cache_counts():
     subscribers_list = subscribers_cache.get("subscribers") or []
     if isinstance(subscribers_list, list):
         counts["subscribers"] = len(subscribers_list)
+
+    validators_list = []
+    v_data = validators_cache.get("validators") or validators_cache.get("data") or {}
+    if isinstance(v_data, list):
+        validators_list = v_data
+    elif isinstance(v_data, dict):
+        validators_list = v_data.get("validators") or v_data.get("result") or []
+    if isinstance(validators_list, list):
+        counts["validators_bonded"] = len(validators_list)
+        active = [v for v in validators_list if isinstance(v, dict) and not v.get("jailed")]
+        counts["validators_active"] = len(active)
 
     return jsonify(counts)
 

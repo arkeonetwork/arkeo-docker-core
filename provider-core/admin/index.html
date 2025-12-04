@@ -42,7 +42,10 @@
 </div>
 
 <div class="card">
-    <h2>Claim Totals</h2>
+    <div class="row-between align-center">
+        <h2 class="mt-0 mb-0">Claim Totals</h2>
+        <button class="btn" onclick="refreshClaimTotals()">Refresh Amounts</button>
+    </div>
     <div id="claimTotals" class="claims-grid muted card-body">(loading claim totals...)</div>
 </div>
 
@@ -255,7 +258,7 @@
                 fetchNoStore(resolveApi("/api/block-height")),
                 fetchNoStore(resolveApi("/api/sentinel-config")),
                 fetchNoStore(resolveApi("/api/sentinel-metadata?quiet=1")),
-                fetch(resolveApi("/api/provider-totals"), {
+                fetch(resolveApi("/api/provider-contracts-summary"), {
                     method: "POST",
                     headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
                     body: "{}",
@@ -574,19 +577,48 @@
             const lookup = providerServiceLookup[rawId] || providerServiceLookup[String(rawId)] || providerServiceLookup[serviceKey];
             const displayName = (lookup && (lookup.description || lookup.name || lookup.service)) || rawName || rawId;
             const totalEntry = totalsMap.get(serviceKey);
-            const { arkeo, uarkeo } = formatArkeoTotals(totalEntry ? totalEntry.total_paid_uarkeo : 0);
-            const txCount = totalEntry ? totalEntry.tx_count || 0 : 0;
-            const contracts = totalEntry && Array.isArray(totalEntry.contracts) ? totalEntry.contracts.length : 0;
+            const paid = totalEntry ? totalEntry.tokens_paid_total_uarkeo || 0 : 0;
+            const remaining = totalEntry ? totalEntry.remaining_uarkeo || 0 : 0;
+            const activeCount = totalEntry ? totalEntry.active_contracts || 0 : 0;
+            const settledCount = totalEntry ? totalEntry.settled_contracts || 0 : 0;
+            const paygCount = totalEntry ? totalEntry.payg_requests_total || 0 : 0;
+            const { arkeo, uarkeo } = formatArkeoTotals(paid);
+            const remainingFmt = formatArkeoTotals(remaining).arkeo;
             return `
                 <div class="claim-card">
                     <div class="claim-title">${displayName || "(unknown service)"}</div>
                     <div class="claim-metric">${arkeo}</div>
-                    <div class="claim-meta">${uarkeo} · txs: ${txCount}${contracts ? ` · contracts: ${contracts}` : ""}</div>
+                    <div class="claim-meta">${uarkeo} · active: ${activeCount} · settled: ${settledCount}${paygCount ? ` · payg reqs: ${paygCount}` : ""}</div>
+                    <div class="claim-meta">Remaining: ${remainingFmt}</div>
                 </div>
             `;
         });
         el.classList.remove("muted");
         el.innerHTML = cards.join("");
+    }
+
+    async function refreshClaimTotals() {
+        const el = document.getElementById("claimTotals");
+        if (el) {
+            el.textContent = "Refreshing claim totals...";
+            el.classList.add("muted");
+        }
+        try {
+            const res = await fetch(resolveApi("/api/provider-contracts-summary"), {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+                body: "{}",
+            });
+            const data = await res.json();
+            if (res.ok) {
+                providerServiceTotals = Array.isArray(data.service_totals) ? data.service_totals : [];
+                renderClaimTotals();
+            } else if (el) {
+                el.textContent = "Error: " + JSON.stringify(data);
+            }
+        } catch (e) {
+            if (el) el.textContent = "Error: " + e;
+        }
     }
 
     function setStatusDot(statusId, state) {
