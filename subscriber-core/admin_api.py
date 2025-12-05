@@ -2781,36 +2781,49 @@ class PaygProxyHandler(BaseHTTPRequestHandler):
                     {"arkeo": meta, "error": "sign_failed", "detail": sig_err},
                     extra_headers=headers,
                 )
-            # response time for the actual forward; fall back to total if missing
-            base_start = forward_start_time or t_total_start
-            response_time_sec = time.time() - base_start
-            total_time_sec = time.time() - t_total_start
-            # Prefer total time for metrics if available
-            if total_time_sec > response_time_sec:
-                response_time_sec = total_time_sec
-            if forward_ms == 0 and forward_start_time:
-                forward_ms = int((time.time() - forward_start_time) * 1000)
-            # Everything outside the measured buckets
-            measured = fetch_ms + select_ms + nonce_ms + sign_ms + forward_ms
-            overhead_ms = max(0, int(total_time_sec * 1000) - measured)
+            success = code is not None and 200 <= int(code) < 300
 
-            self._log(
-                "info",
-                (
-                    "timings total_ms=%d fetch_ms=%d select_ms=%d nonce_ms=%d sign_ms=%d "
-                    "forward_ms=%d overhead_ms=%d auto_create=%s"
+            if success:
+                # response time for the actual forward; fall back to total if missing
+                base_start = forward_start_time or t_total_start
+                response_time_sec = time.time() - base_start
+                total_time_sec = time.time() - t_total_start
+                # Prefer total time for metrics if available
+                if total_time_sec > response_time_sec:
+                    response_time_sec = total_time_sec
+                if forward_ms == 0 and forward_start_time:
+                    forward_ms = int((time.time() - forward_start_time) * 1000)
+                # Everything outside the measured buckets
+                measured = fetch_ms + select_ms + nonce_ms + sign_ms + forward_ms
+                overhead_ms = max(0, int(total_time_sec * 1000) - measured)
+
+                self._log(
+                    "info",
+                    (
+                        "timings total_ms=%d fetch_ms=%d select_ms=%d nonce_ms=%d sign_ms=%d "
+                        "forward_ms=%d overhead_ms=%d auto_create=%s"
+                    )
+                    % (
+                        int(total_time_sec * 1000),
+                        fetch_ms,
+                        select_ms,
+                        nonce_ms,
+                        sign_ms,
+                        forward_ms,
+                        overhead_ms,
+                        auto_created_this_request,
+                    ),
                 )
-                % (
-                    int(total_time_sec * 1000),
-                    fetch_ms,
-                    select_ms,
-                    nonce_ms,
-                    sign_ms,
-                    forward_ms,
-                    overhead_ms,
-                    auto_created_this_request,
-                ),
-            )
+            else:
+                # Do not record timings on failure; mark the provider down
+                response_time_sec = 0
+                if forward_ms == 0 and forward_start_time:
+                    forward_ms = int((time.time() - forward_start_time) * 1000)
+                self._log("warning", f"forward failed code={code} provider={provider_filter} sentinel={sentinel}; not recording timings")
+                try:
+                    _set_top_service_status(cfg.get("listener_id"), provider_filter, "Down")
+                except Exception:
+                    pass
 
             meta_full = _build_arkeo_meta_clean(active, nonce, svc_id, service, provider_filter, contract_client, sentinel, response_time_sec)
             self.server.last_code = code
@@ -2827,16 +2840,17 @@ class PaygProxyHandler(BaseHTTPRequestHandler):
                     del cooldowns[provider_filter]
                 except Exception:
                     pass
-            try:
-                _set_top_service_status(cfg.get("listener_id"), provider_filter, "Up")
-            except Exception:
-                pass
-            try:
-                # Do not include auto-create paths in latency stats; they skew averages
-                if self._should_record_metrics(code, auto_created_this_request):
-                    _update_top_service_metrics(cfg.get("listener_id"), provider_filter, response_time_sec)
-            except Exception:
-                pass
+            if success:
+                try:
+                    _set_top_service_status(cfg.get("listener_id"), provider_filter, "Up")
+                except Exception:
+                    pass
+                try:
+                    # Do not include auto-create paths in latency stats; they skew averages
+                    if self._should_record_metrics(code, auto_created_this_request):
+                        _update_top_service_metrics(cfg.get("listener_id"), provider_filter, response_time_sec)
+                except Exception:
+                    pass
             self.server.active_contract = active
             if hasattr(self.server, "active_contracts"):
                 self.server.active_contracts[provider_filter] = active

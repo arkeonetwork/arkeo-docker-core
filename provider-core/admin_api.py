@@ -748,6 +748,17 @@ def bond_and_mod_provider():
             }
         ), 500
 
+    # Sync provider name/moniker to sentinel env so they stay aligned
+    try:
+        env_file = _load_env_file(SENTINEL_ENV_PATH)
+        name_val = env_file.get("MONIKER") or env_file.get("PROVIDER_NAME") or os.getenv("MONIKER") or os.getenv("PROVIDER_NAME") or "Arkeo Provider"
+        env_file["MONIKER"] = name_val
+        env_file["PROVIDER_NAME"] = name_val
+        _write_env_file(SENTINEL_ENV_PATH, env_file)
+        app.logger.info("bond-mod-provider synced MONIKER/PROVIDER_NAME to %s", name_val)
+    except Exception as e:
+        app.logger.warning("bond-mod-provider failed to sync MONIKER/PROVIDER_NAME: %s", e)
+
     return jsonify(
         {
             "status": "bond_and_mod_submitted",
@@ -1156,6 +1167,17 @@ def _load_env_file(path: str) -> dict:
         pass
     return data
 
+def _write_env_file(path: str, data: dict) -> None:
+    """Write env-style file from a dict."""
+    if not path or not isinstance(data, dict):
+        return
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            for k, v in data.items():
+                f.write(f"{k}={shlex.quote(str(v))}\n")
+    except OSError:
+        pass
+
 
 def _load_export_bundle() -> dict | None:
     """Load cached provider export if present."""
@@ -1371,6 +1393,15 @@ def sentinel_rebuild():
         target_name_lower = target_name.lower()
     status_raw = str(target.get("status") or "").lower()
     should_remove = status_raw in ("0", "inactive", "offline")
+    app.logger.info(
+        "sentinel-rebuild override target id=%s name=%s rpc_url=%s rpc_user=%s rpc_pass=%s remove=%s",
+        target_id,
+        target_name,
+        target.get("rpc_url"),
+        target.get("rpc_user"),
+        "***" if target.get("rpc_pass") else "",
+        should_remove,
+    )
 
     raw_pubkey, bech32_pubkey, pub_err = derive_pubkeys(KEY_NAME, KEYRING)
     if pub_err:
@@ -1423,6 +1454,7 @@ def sentinel_rebuild():
             continue
         match = _svc_matches(svc)
         if match:
+            app.logger.info("sentinel-rebuild matched service id=%s name=%s", svc.get("id"), svc.get("name"))
             if should_remove:
                 updated = True
                 continue
@@ -1443,6 +1475,14 @@ def sentinel_rebuild():
             entry.setdefault("rpc_user", "")
             entry.setdefault("rpc_pass", "")
             new_services.append(entry)
+            app.logger.info(
+                "sentinel-rebuild updated service id=%s name=%s rpc_url=%s rpc_user=%s rpc_pass=%s",
+                entry.get("id"),
+                entry.get("name"),
+                entry.get("rpc_url"),
+                entry.get("rpc_user"),
+                "***" if entry.get("rpc_pass") else "",
+            )
             updated = True
         else:
             new_services.append(svc)
@@ -1503,6 +1543,8 @@ def sentinel_rebuild():
         code, out = run_list([*SUPERVISORCTL, "restart", "sentinel"])
     except Exception as e:
         return jsonify({"error": "failed to restart sentinel", "detail": str(e)}), 500
+
+    app.logger.info("sentinel-rebuild wrote config and restarted sentinel code=%s", code)
 
     return jsonify(
         {

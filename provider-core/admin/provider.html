@@ -400,6 +400,9 @@
         const selectedOption = select.options[select.selectedIndex];
         const serviceId = selectedOption ? selectedOption.dataset.id || "" : "";
         const serviceName = document.getElementById("bondService").value.trim();
+        const rpcUrlVal = document.getElementById("rpcUrl").value.trim();
+        const rpcUserVal = document.getElementById("rpcUser").value.trim();
+        const rpcPassVal = document.getElementById("rpcPass").value.trim();
         const payload = {
             service: document.getElementById("bondService").value.trim(),
             bond: bondAmount,
@@ -411,9 +414,6 @@
             subscription_rates: document.getElementById("subscriptionRates").value.trim(),
             pay_as_you_go_rates: document.getElementById("payAsYouGoRates").value.trim(),
             settlement_dur: document.getElementById("settlementDur").value.trim(),
-            rpc_url: document.getElementById("rpcUrl").value.trim(),
-            rpc_user: document.getElementById("rpcUser").value.trim(),
-            rpc_pass: document.getElementById("rpcPass").value.trim(),
         };
         setPre("bondResult", "Submitting bond and mod...");
         showSavingOverlay(true);
@@ -428,6 +428,15 @@
             const data = await res.json();
             const resOk = res.ok;
             updateDerivedFields(data);
+            if (!resOk) {
+                setPre("bondResult", "Error: " + JSON.stringify(data, null, 2));
+                return;
+            }
+            if (!bondAndModSucceeded(data)) {
+                setPre("bondResult", JSON.stringify(data, null, 2));
+                return;
+            }
+            // Only rebuild sentinel if bond+mod succeeded
             try {
                 const rebuildRes = await fetch(resolveApi("/api/sentinel-rebuild"), {
                     method: "POST",
@@ -439,9 +448,9 @@
                                 id: serviceId,
                                 service: serviceName,
                                 status: payload.status,
-                                rpc_url: payload.rpc_url,
-                                rpc_user: payload.rpc_user,
-                                rpc_pass: payload.rpc_pass,
+                                rpc_url: rpcUrlVal,
+                                rpc_user: rpcUserVal,
+                                rpc_pass: rpcPassVal,
                             },
                         ],
                     }),
@@ -451,18 +460,14 @@
                     setPre("bondResult", "Sentinel rebuild failed: " + JSON.stringify(rebuildData, null, 2));
                     return;
                 }
-                setPre("bondResult", "Sentinel rebuild ok:\n" + JSON.stringify(rebuildData, null, 2));
+                setPre(
+                    "bondResult",
+                    "Bond + Mod succeeded.\nSentinel rebuild ok:\n" + JSON.stringify(rebuildData, null, 2)
+                );
             } catch (e) {
                 console.warn("sentinel rebuild failed", e);
                 setPre("bondResult", "Sentinel rebuild failed: " + e);
-                return;
             }
-            if (!resOk) {
-                setPre("bondResult", "Error: " + JSON.stringify(data, null, 2));
-                return;
-            }
-            setPre("bondResult", JSON.stringify(data, null, 2));
-            // Do not auto-redirect; keep the user on the form to review results.
         } catch (e) {
             setPre("bondResult", "Request failed: " + e);
         } finally {
@@ -505,11 +510,11 @@
         if (data.user) {
             document.getElementById("walletKey").textContent = data.user;
         }
-        if (data.sentinel_uri) {
+        if (data.sentinel_uri && !editingExisting) {
             document.getElementById("sentinelUri").value = data.sentinel_uri;
         }
         if (data.inputs) {
-            if (data.inputs.sentinel_uri) document.getElementById("sentinelUri").value = data.inputs.sentinel_uri;
+            if (data.inputs.sentinel_uri && !editingExisting) document.getElementById("sentinelUri").value = data.inputs.sentinel_uri;
             if (data.inputs.metadata_nonce && !nonceLockedFromEdit) {
                 document.getElementById("metadataNonceHidden").value = data.inputs.metadata_nonce;
                 document.getElementById("metadataNonceLabel").textContent = data.inputs.metadata_nonce;
@@ -523,6 +528,8 @@
         }
         applyPendingEdit();
         applyCachedProviderForm();
+        // Write blockchain-derived provider info to debug field
+        setPre("bondResult", JSON.stringify(data, null, 2));
     }
 
     async function loadProviderInfo() {
