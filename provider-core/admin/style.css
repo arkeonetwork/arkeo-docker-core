@@ -288,6 +288,30 @@ pre {
     color: var(--muted-2);
     font-size: 12px;
 }
+.timer-band {
+    width: 100%;
+    height: 6px;
+    background: #0b1220;
+    border: 1px solid #1f2937;
+    border-radius: 6px;
+    overflow: hidden;
+    margin: 6px 0 12px;
+    position: relative;
+}
+.timer-fill {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, #3be0ff, #0ea5e9);
+    transform-origin: left center;
+    transform: scaleX(1);
+}
+.timer-fill.running {
+    animation: claims-band 62s linear forwards;
+}
+@keyframes claims-band {
+    from { transform: scaleX(1); }
+    to { transform: scaleX(0); }
+}
 
 .footer-card {
     text-align: left;
@@ -420,6 +444,12 @@ pre {
     max-width: 640px;
     width: 90%;
 }
+.fixed-modal {
+    width: 640px;
+    max-width: 90%;
+    min-height: 360px;
+    max-height: 80vh;
+}
 .modal-card pre {
     max-height: 50vh;
     text-align: left;
@@ -427,6 +457,31 @@ pre {
 .modal-card #modalBody,
 .modal-card pre#modalBody {
     text-align: left;
+}
+.modal-body {
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 12px 0;
+    color: #dce2ef;
+}
+.scroll-body {
+    max-height: 400px;
+    min-height: 240px;
+    overflow: auto;
+    background: #0b1220;
+    border: 1px solid var(--border-strong);
+    padding: 10px;
+    border-radius: 6px;
+    text-align: right;
+}
+.modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 12px;
+}
+.modal-actions button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
 }
 
 .hidden { display: none; }

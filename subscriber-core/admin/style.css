@@ -193,7 +193,7 @@ a { color: var(--blue-accent); }
     gap: 8px;
 }
 
-.muted { color: var(--muted); }
+.muted { color: var(--muted); padding-bottom: 2px; }
 .muted.small { color: var(--muted-2); padding-left: 0; font-weight: 400; font-size: 12px; }
 .stack { display: flex; flex-direction: column; gap: 8px; }
 .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
@@ -491,7 +491,7 @@ pre {
     display: flex;
     justify-content: flex-end;
     align-items: center;
-    margin-bottom: 14px;
+    margin-bottom: 0;
 }
 .listener-form input[type="text"],
 .listener-form input[type="number"],
@@ -651,9 +651,14 @@ pre {
     color: #cbd5e1;
 }
 .modal-card {
-    max-width: 640px;
-    width: 90%;
+    width: 720px;
+    max-width: 90vw;
+    height: 520px;
+    max-height: 90vh;
     padding-bottom: 16px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
 }
 .modal-body {
     text-align: left;
@@ -662,13 +667,24 @@ pre {
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 12px;
-    overflow: visible;
+    overflow: hidden;
+    flex: 1 1 auto;
+    min-height: 0; /* allow flex item to shrink so only inner scrolls */
+    display: flex;
+    flex-direction: column;
     font-family: Menlo, Monaco, Consolas, "Courier New", monospace;
     font-size: 13px;
     line-height: 1.4;
     }
 .modal-card .primary {
     margin-top: 12px;
+    align-self: flex-end;
+}
+.modal-body pre {
+    margin: 0;
+    white-space: pre-wrap;
+    overflow: auto;
+    flex: 1 1 auto;
 }
 
 .hidden { display: none; }

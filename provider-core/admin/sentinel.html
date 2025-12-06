@@ -221,12 +221,8 @@
     }
 
     function setAdminHost(candidateHost) {
-        if (!candidateHost) return;
-        const cleaned = extractHostFromValue(candidateHost) || candidateHost;
-        if (cleaned && cleaned !== adminHost) {
-            adminHost = cleaned;
-            adminApiBase = buildBaseUrl(adminHost, DEFAULT_ADMIN_API_PORT);
-        }
+        // Keep adminApiBase anchored to the page host; do not override.
+        return;
     }
 
     function resolveApi(path) {

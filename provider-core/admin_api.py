@@ -11,6 +11,7 @@ import urllib.error
 import urllib.request
 import urllib.parse
 import yaml
+import datetime
 from flask import Flask, jsonify, request
 
 app = Flask(__name__)
@@ -69,6 +70,7 @@ SENTINEL_CONFIG_PATH = os.getenv("SENTINEL_CONFIG_PATH", "/app/config/sentinel.y
 SENTINEL_ENV_PATH = os.getenv("SENTINEL_ENV_PATH", "/app/config/sentinel.env")
 PROVIDER_ENV_PATH = os.getenv("PROVIDER_ENV_PATH", "/app/provider.env")
 CACHE_DIR = os.getenv("CACHE_DIR", "/app/cache")
+CLAIMS_HEARTBEAT_PATH = os.path.join(CACHE_DIR, "claims-heartbeat.json") if CACHE_DIR else "claims-heartbeat.json"
 ENV_EXPORT_KEYS = [
     "PROVIDER_NAME",
     "MONIKER",
@@ -201,6 +203,27 @@ def write_cache_json(name: str, data: dict | list | str):
                 f.write(str(data))
     except OSError:
         pass
+
+def write_heartbeat(path: str, payload: dict):
+    """Write a small JSON heartbeat to the given path."""
+    ensure_cache_dir()
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+    except OSError:
+        pass
+
+def read_heartbeat(path: str):
+    """Read a small JSON heartbeat file."""
+    if not path:
+        return None
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
 
 def read_cache_json(name: str):
     """Read JSON data from /app/cache/{name}.json if present."""
@@ -1178,6 +1201,14 @@ def _write_env_file(path: str, data: dict) -> None:
     except OSError:
         pass
 
+def _expand_tilde(val: str) -> str:
+    """Expand leading tilde to $HOME."""
+    if not isinstance(val, str):
+        return val
+    if val.startswith("~"):
+        return os.path.expanduser(val)
+    return val
+
 
 def _load_export_bundle() -> dict | None:
     """Load cached provider export if present."""
@@ -1799,6 +1830,45 @@ def update_sentinel_config():
     if payload.get("provider_hub_uri"):
         _set_env("PROVIDER_HUB_URI", payload.get("provider_hub_uri"))
         _set_env("ARKEO_REST_API_PORT", payload.get("provider_hub_uri"))
+    # Sync from provider env vars if present (EXTERNAL_ARKEOD_NODE, ARKEO_REST_API_PORT, SENTINEL_NODE)
+    def _normalize_hostport(url: str, default_port: str | None = None) -> str:
+        if not url:
+            return ""
+        url = url.strip()
+        if url.startswith("tcp://"):
+            url = "http://" + url[len("tcp://") :]
+        try:
+            parsed = urllib.parse.urlparse(url)
+            hostport = parsed.netloc or parsed.path
+            if hostport and default_port and ":" not in hostport:
+                hostport = f"{hostport}:{default_port}"
+            return hostport
+        except Exception:
+            return url
+
+    provider_node = os.getenv("EXTERNAL_ARKEOD_NODE") or os.getenv("ARKEOD_NODE")
+    if provider_node:
+        hostport = _normalize_hostport(provider_node, "26657")
+        if hostport:
+            _set_env("EVENT_STREAM_HOST", hostport)
+    hub_env = os.getenv("PROVIDER_HUB_URI") or os.getenv("ARKEO_REST_API_PORT")
+    if hub_env:
+        _set_env("PROVIDER_HUB_URI", hub_env)
+        _set_env("ARKEO_REST_API_PORT", hub_env)
+    sentinel_node_env = os.getenv("SENTINEL_NODE")
+    if sentinel_node_env:
+        _set_env("SENTINEL_NODE", sentinel_node_env)
+
+    # Sync MONIKER/PROVIDER_NAME to the same value (prefer payload provider_name, then moniker)
+    name_val = provider_name or moniker or env_file.get("MONIKER") or env_file.get("PROVIDER_NAME") or os.getenv("MONIKER") or os.getenv("PROVIDER_NAME") or ""
+    if name_val:
+        env_file["MONIKER"] = name_val
+        env_file["PROVIDER_NAME"] = name_val
+
+    # Expand tilde paths for store locations
+    for key in ("CLAIM_STORE_LOCATION", "CONTRACT_CONFIG_STORE_LOCATION", "PROVIDER_CONFIG_STORE_LOCATION"):
+        if key in env_file:
+            env_file[key] = _expand_tilde(env_file[key])
 
     # Prefer explicit provider_name for the YAML provider.name; do not fall back to moniker
     effective_provider_name = provider_name or config.get("provider", {}).get("name") or os.getenv("PROVIDER_NAME") or env_file.get("PROVIDER_NAME")
@@ -1895,6 +1965,34 @@ def provider_claims():
     max_iterations = 10
     total_processed = 0
 
+    def poll_tx(txhash: str, attempts: int = 15, delay: float = 1.0) -> tuple[int | None, str, str]:
+        """Poll tx until a DeliverTx result is available. Returns (code, raw_log, height)."""
+        if not txhash:
+            return None, "", ""
+        cmd = ["arkeod", "q", "tx", txhash, "-o", "json", *NODE_ARGS]
+        for _ in range(attempts):
+            try:
+                code, out = run_list(cmd)
+            except Exception:
+                code = 1
+                out = ""
+            if code != 0 or not out:
+                time.sleep(delay)
+                continue
+            try:
+                txobj = json.loads(out)
+            except Exception:
+                time.sleep(delay)
+                continue
+            deliver_code = txobj.get("code")
+            raw_log = txobj.get("raw_log") or ""
+            height = txobj.get("height") or ""
+            if deliver_code is None:
+                time.sleep(delay)
+                continue
+            return deliver_code, raw_log, height
+        return None, "", ""
+
     while iterations < max_iterations:
         iterations += 1
         pending, err = fetch_open_claims()
@@ -1971,6 +2069,10 @@ def provider_claims():
             except Exception:
                 tx_json = {"raw": tx_out}
 
+            txhash = ""
+            if isinstance(tx_json, dict):
+                txhash = tx_json.get("txhash") or tx_json.get("hash") or ""
+
             raw_log = ""
             if isinstance(tx_json, dict):
                 raw_log = tx_json.get("raw_log") or tx_json.get("rawlog") or ""
@@ -1986,9 +2088,23 @@ def provider_claims():
                     except Exception:
                         tx_json = {"raw": tx_out}
 
+            # Poll for deliver_tx result if we have a txhash (since sync mode only gives CheckTx)
+            deliver_code = None
+            deliver_raw = ""
+            deliver_height = ""
+            if txhash:
+                deliver_code, deliver_raw, deliver_height = poll_tx(txhash)
+                if isinstance(tx_json, dict):
+                    tx_json["deliver_tx"] = {
+                        "code": deliver_code,
+                        "raw_log": deliver_raw,
+                        "height": deliver_height,
+                    }
+
             # Mark claimed on sentinel if success code=0
             code_val = tx_json.get("code") if isinstance(tx_json, dict) else None
-            if code_val == 0:
+            effective_code = deliver_code if deliver_code is not None else code_val
+            if effective_code == 0:
                 try:
                     req = urllib.request.Request(
                         f"{sentinel_api}/mark-claimed",
@@ -2007,7 +2123,21 @@ def provider_claims():
         if processed_this_iter == 0:
             break
 
+    # Heartbeat: record last claims run
+    try:
+        now_ts = datetime.datetime.utcnow().isoformat() + "Z"
+        write_heartbeat(CLAIMS_HEARTBEAT_PATH, {"last_claims_run": now_ts, "claims_processed": total_processed})
+    except Exception:
+        pass
+
     return jsonify({"status": "ok", "iterations": iterations, "claims_processed": total_processed, "results": results})
+
+
+@app.get("/api/claims-heartbeat")
+def claims_heartbeat():
+    """Return the last provider-claims heartbeat if available."""
+    hb = read_heartbeat(CLAIMS_HEARTBEAT_PATH) or {}
+    return jsonify(hb)
 
 @app.get("/api/claims-ledger")
 def claims_ledger():
@@ -2206,6 +2336,9 @@ def provider_contracts_summary():
     if not isinstance(contracts, list):
         contracts = []
 
+    heartbeat = read_heartbeat(CLAIMS_HEARTBEAT_PATH) or {}
+
+    service_totals = []
     filtered = []
     for c in contracts:
         if not isinstance(c, dict):
@@ -2239,6 +2372,7 @@ def provider_contracts_summary():
                 rate_amount = 0
         elif isinstance(rate_val, dict):
             rate_amount = _parse_int(rate_val.get("amount"), 0)
+        tx_count = nonce if "PAY" in contract_type else 0
         filtered.append(
             {
                 "contract_id": str(contract_id),
@@ -2248,6 +2382,7 @@ def provider_contracts_summary():
                 "deposit": deposit,
                 "remaining": max(0, deposit - paid),
                 "nonce": nonce,
+                "tx_count": tx_count,
                 "settlement_height": settlement_height,
                 "settlement_duration": settlement_duration,
                 "rate_amount": rate_amount,
@@ -2270,6 +2405,7 @@ def provider_contracts_summary():
                 "active_contracts": 0,
                 "settled_contracts": 0,
                 "remaining_uarkeo": 0,
+                "last_claims_run": heartbeat.get("last_claims_run"),
             }
         )
 
@@ -2290,6 +2426,7 @@ def provider_contracts_summary():
                 "tokens_paid_total_uarkeo": 0,
                 "tokens_paid_finalized_uarkeo": 0,
                 "payg_requests_total": 0,
+                "tx_count": 0,
                 "active_contracts": 0,
                 "settled_contracts": 0,
                 "remaining_uarkeo": 0,
@@ -2304,6 +2441,7 @@ def provider_contracts_summary():
         else:
             st["active_contracts"] += 1
         st["payg_requests_total"] += c["nonce"] if "PAY" in c["type"] else 0
+        st["tx_count"] += c.get("tx_count", 0)
         st["remaining_uarkeo"] += c["remaining"]
         st["deposit_total_uarkeo"] += c["deposit"]
         st["contracts"].append(
@@ -2340,6 +2478,7 @@ def provider_contracts_summary():
             "remaining_uarkeo": remaining_total,
             "contracts": filtered,
             "service_totals": service_totals,
+            "last_claims_run": heartbeat.get("last_claims_run"),
         }
     )
 

@@ -9,13 +9,6 @@
 </head>
 <body>
 
-<div id="savingOverlay" class="overlay hidden">
-    <div class="overlay-card">
-        <h3>Please wait…</h3>
-        <p>Submitting two on-chain contracts, updating sentinel config, and restarting the sentinel. This can take up to ~15 seconds.</p>
-    </div>
-</div>
-
 <div class="card header-card">
     <div class="row-between header-top">
         <div class="header-left">
@@ -39,6 +32,15 @@
     <h2 class="mt-0">Bond Provider Service</h2>
     <div class="hint mt-6">
         Saving can take up to ~15 seconds. Two contracts are submitted and verified on-chain, the sentinel config is updated, and the sentinel restarts. Please be patient.
+    </div>
+    <div id="resultModal" class="overlay hidden">
+        <div class="overlay-card modal-card fixed-modal">
+            <h3 id="modalTitle">Result</h3>
+            <div id="modalBody" class="modal-body scroll-body"></div>
+            <div class="modal-actions">
+                <button id="modalCloseBtn" class="primary" type="button" onclick="closeModal()">OK</button>
+            </div>
+        </div>
     </div>
     <form id="bondForm" onsubmit="bondProvider(event)">
         <table>
@@ -116,7 +118,7 @@
                     <div class="hint">On a new provider, 100000000uarkeo is required. On an edit, a minimum of 1uarkeo is required.</div>
                 </td>
                 <td class="value">
-                    <input type="text" id="bondAmountInput" value="1" />
+                    <input type="text" id="bondAmountInput" value="" placeholder="100000000" />
                 </td>
             </tr>
             <tr>
@@ -216,8 +218,6 @@
     </div>
 </div>
 
-<pre id="bondResult"></pre>
-
 <div class="card footer-card">
     <div class="footer-links">
         <div class="footer-brand">
@@ -235,10 +235,9 @@
     </div>
 </div>
 
-<pre id="servicesDebug" class="pre-wrap"></pre>
-
 <script>
     const DEFAULT_ADMIN_API_PORT = "9999";
+    // Always anchor to the page host
     let adminHost = (window.location && window.location.hostname) || "localhost";
     let adminApiBase = buildBaseUrl(adminHost, DEFAULT_ADMIN_API_PORT);
 
@@ -259,17 +258,56 @@
     }
 
     function setAdminHost(candidateHost) {
-        if (!candidateHost) return;
-        const cleaned = extractHostFromValue(candidateHost) || candidateHost;
-        if (cleaned && cleaned !== adminHost) {
-            adminHost = cleaned;
-            adminApiBase = buildBaseUrl(adminHost, DEFAULT_ADMIN_API_PORT);
-        }
+        // Do not override adminApiBase; keep using the page host for API calls
+        return;
     }
 
     function resolveApi(path) {
         if (!path.startsWith("/")) path = `/${path}`;
         return `${adminApiBase}${path}`;
+    }
+
+    function showResultModal(title, body) {
+        const modal = document.getElementById("resultModal");
+        const modalTitle = document.getElementById("modalTitle");
+        const modalBody = document.getElementById("modalBody");
+        if (modalTitle) modalTitle.textContent = title || "Result";
+        if (modalBody) modalBody.textContent = body || "";
+        if (modal) modal.style.display = "flex";
+    }
+
+    function resetModal(title, body) {
+        const modal = document.getElementById("resultModal");
+        const modalTitle = document.getElementById("modalTitle");
+        const modalBody = document.getElementById("modalBody");
+        if (modalTitle) modalTitle.textContent = title || "Result";
+        if (modalBody) modalBody.textContent = body || "";
+        setModalCloseEnabled(false);
+        if (modal) modal.style.display = "flex";
+    }
+
+    function appendModalLine(text) {
+        const modalBody = document.getElementById("modalBody");
+        if (!modalBody) return;
+        const current = modalBody.textContent || "";
+        modalBody.textContent = current ? `${current}\n${text}` : text;
+    }
+
+    function setModalCloseEnabled(enabled) {
+        const btn = document.getElementById("modalCloseBtn");
+        if (!btn) return;
+        btn.disabled = !enabled;
+        if (enabled) {
+            btn.removeAttribute("disabled");
+        } else {
+            btn.setAttribute("disabled", "disabled");
+        }
+    }
+
+    function closeModal() {
+        const modal = document.getElementById("resultModal");
+        if (modal) modal.style.display = "none";
+        window.location.href = "index.html";
     }
 
     let pendingEditService = null;
@@ -285,8 +323,8 @@
     function setBondAmountForMode() {
         const input = document.getElementById("bondAmountInput");
         if (!input) return;
-        // Default to 1; respect any user-entered value.
-        if (!input.value) input.value = "1";
+        // Default new provider to 100000000; edits to 1; respect user-entered value.
+        if (!input.value) input.value = editingExisting ? "1" : "100000000";
     }
 
     function formatBondDisplay(val) {
@@ -306,9 +344,8 @@
     }
 
     function showSavingOverlay(show) {
-        const el = document.getElementById("savingOverlay");
-        if (!el) return;
-        el.style.display = show ? "flex" : "none";
+        // Overlay removed; keep function no-op for compatibility.
+        return;
     }
 
     function pullPendingEdit() {
@@ -349,7 +386,18 @@
                 return;
             }
             select.innerHTML = '<option value="">Select a service</option>';
-            for (const svc of services) {
+            const sorted = services.slice().sort((a, b) => {
+                const da = (a.description || "").toLowerCase();
+                const db = (b.description || "").toLowerCase();
+                if (da && db && da !== db) return da.localeCompare(db);
+                const na = (a.name || "").toLowerCase();
+                const nb = (b.name || "").toLowerCase();
+                if (na && nb && na !== nb) return na.localeCompare(nb);
+                const ia = String(a.id ?? "");
+                const ib = String(b.id ?? "");
+                return ia.localeCompare(ib);
+            });
+            for (const svc of sorted) {
                 const id = svc.id ?? "";
                 const name = svc.name ?? "";
                 const desc = svc.description ?? "";
@@ -380,7 +428,7 @@
         submitBtn.disabled = true;
         submitBtn.textContent = "Submitting...";
         const bondAmountInput = document.getElementById("bondAmountInput");
-        const bondAmount = (bondAmountInput?.value || "").trim() || "1";
+        const bondAmount = (bondAmountInput?.value || "").trim() || (editingExisting ? "1" : "100000000");
         if (!/^[0-9]+$/.test(bondAmount)) {
             alert("Bond amount must be an integer (no letters or symbols).");
             submitBtn.disabled = false;
@@ -394,6 +442,7 @@
             submitBtn.textContent = "Submit Bond + Mod";
             return;
         }
+        showResultModal("Provider Service", "Submitting bond/mod contracts...");
         // Always increment the metadata nonce immediately before submitting
         const metadataNonce = incrementMetadataNonce();
         const select = document.getElementById("bondService");
@@ -415,8 +464,9 @@
             pay_as_you_go_rates: document.getElementById("payAsYouGoRates").value.trim(),
             settlement_dur: document.getElementById("settlementDur").value.trim(),
         };
-        setPre("bondResult", "Submitting bond and mod...");
-        showSavingOverlay(true);
+        resetModal("Provider Service", "");
+        appendModalLine("Submitting bond/mod contracts...");
+        setModalCloseEnabled(false);
         try {
             const res = await fetch(resolveApi("/api/bond-mod-provider"), {
                 method: "POST",
@@ -429,15 +479,29 @@
             const resOk = res.ok;
             updateDerivedFields(data);
             if (!resOk) {
-                setPre("bondResult", "Error: " + JSON.stringify(data, null, 2));
+                appendModalLine("Bond contract error.");
+                appendModalLine("Mod contract error.");
+                appendModalLine(JSON.stringify(data, null, 2));
+                appendModalLine("");
+                appendModalLine("Provider service and Sentinel errored. Check the logs for more info.");
+                setModalCloseEnabled(true);
                 return;
             }
             if (!bondAndModSucceeded(data)) {
-                setPre("bondResult", JSON.stringify(data, null, 2));
+                appendModalLine("Bond contract error.");
+                appendModalLine("Mod contract error.");
+                appendModalLine(JSON.stringify(data, null, 2));
+                appendModalLine("");
+                appendModalLine("Provider service and Sentinel errored. Check the logs for more info.");
+                setModalCloseEnabled(true);
                 return;
             }
+            appendModalLine("Bond contract success.");
+            appendModalLine("Mod contract success.");
+            appendModalLine("");
             // Only rebuild sentinel if bond+mod succeeded
             try {
+                appendModalLine("Updating Sentinel...");
                 const rebuildRes = await fetch(resolveApi("/api/sentinel-rebuild"), {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
@@ -457,24 +521,65 @@
                 });
                 const rebuildData = await rebuildRes.json();
                 if (!rebuildRes.ok) {
-                    setPre("bondResult", "Sentinel rebuild failed: " + JSON.stringify(rebuildData, null, 2));
+                    appendModalLine("Sentinel update error.");
+                    appendModalLine("Sentinel rebuild error.");
+                    appendModalLine(JSON.stringify(rebuildData, null, 2));
+                    appendModalLine("");
+                    appendModalLine("Provider service and Sentinel errored. Check the logs for more info.");
+                    setModalCloseEnabled(true);
                     return;
                 }
-                setPre(
-                    "bondResult",
-                    "Bond + Mod succeeded.\nSentinel rebuild ok:\n" + JSON.stringify(rebuildData, null, 2)
-                );
+                appendModalLine("Sentinel update success.");
+                appendModalLine("");
+                appendModalLine("Rebuilding Sentinel...");
+                appendModalLine("Sentinel rebuild success.");
+                appendModalLine("");
             } catch (e) {
                 console.warn("sentinel rebuild failed", e);
-                setPre("bondResult", "Sentinel rebuild failed: " + e);
+                appendModalLine("Sentinel update error.");
+                appendModalLine("Sentinel rebuild error.");
+                appendModalLine(String(e));
+                appendModalLine("");
+                appendModalLine("Provider service and Sentinel errored. Check the logs for more info.");
+                setModalCloseEnabled(true);
+                return;
             }
+            // Optional: sync sentinel.yaml with on-chain active services after a short delay
+            try {
+                await new Promise((resolve) => setTimeout(resolve, 6500)); // ~1 block
+                const syncRes = await fetch(resolveApi("/api/sentinel-sync"), { method: "POST" });
+                const syncData = await syncRes.json();
+                if (syncRes.ok) {
+                    appendModalLine("Resyncing Sentinel...");
+                    appendModalLine("Sentinel resync success.");
+                    appendModalLine("");
+                } else {
+                    appendModalLine("Resyncing Sentinel... Error.");
+                    appendModalLine(JSON.stringify(syncData, null, 2));
+                    appendModalLine("");
+                    appendModalLine("Provider service and Sentinel errored. Check the logs for more info.");
+                    setModalCloseEnabled(true);
+                    return;
+                }
+            } catch (e) {
+                appendModalLine("Resyncing Sentinel... Error.");
+                appendModalLine(String(e));
+                appendModalLine("");
+                appendModalLine("Provider service and Sentinel errored. Check the logs for more info.");
+                setModalCloseEnabled(true);
+                return;
+            }
+            appendModalLine("Provider service and Sentinel updated successfully.");
+            setModalCloseEnabled(true);
         } catch (e) {
-            setPre("bondResult", "Request failed: " + e);
+            appendModalLine("Request failed: " + e);
+            appendModalLine("");
+            appendModalLine("Provider service and Sentinel errored. Check the logs for more info.");
+            setModalCloseEnabled(true);
         } finally {
             submitBtn.disabled = false;
             submitBtn.textContent = "Submit Bond + Mod";
             // Overlay will be hidden only if we remain on the page (errors)
-            showSavingOverlay(false);
         }
     }
 
@@ -577,16 +682,9 @@
         }
     }
 
-    function setPre(id, text) {
-        const el = document.getElementById(id);
-        if (!el) return;
-        if (text === "" || text === null || text === undefined) {
-            el.style.display = "none";
-            el.textContent = "";
-            return;
-        }
-        el.style.display = "block";
-        el.textContent = text;
+    function setPre(_id, _text) {
+        // Deprecated: debug div removed; use modal for messages.
+        return;
     }
 
     function setSelectFromCandidates(select, candidates) {

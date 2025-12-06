@@ -83,26 +83,13 @@
         </div>
     </div>
     <form id="listenerForm" class="listener-form" onsubmit="submitListenerForm(event)">
-        <div class="listener-grid">
-            <label>
-                <div class="muted">Status</div>
-                <select id="listenerStatus" class="select">
-                    <option value="active">Active</option>
-                    <option value="inactive">Inactive</option>
-                </select>
-                <div class="muted small">Active = serve, inactive = paused.</div>
-            </label>
-            <label>
+        <div class="listener-grid" style="grid-template-columns: 1fr auto; align-items: end; gap: 12px;">
+            <label style="width:100%;">
                 <div class="muted">Service Type</div>
-                <select id="listenerService" class="select"></select>
-                <div class="muted small">Choose an active service to bind.</div>
+                <div class="muted small">Choose a provider service to bind to a listener.</div>
+                <select id="listenerService" class="select" style="width:100%;"></select>
             </label>
-            <label>
-                <div class="muted">Whitelist IPs</div>
-                <input id="listenerWhitelist" type="text" class="input" placeholder="0.0.0.0" />
-                <div class="muted small">Empty = allow all, comma separated.</div>
-            </label>
-            <div class="listener-actions" style="align-self:flex-end;">
+            <div class="listener-actions" style="align-self:flex-end; white-space: nowrap;">
                 <button type="submit" class="primary">Add Listener</button>
             </div>
         </div>
@@ -304,21 +291,34 @@
     async function refreshCache() {
         const statusEl = document.getElementById("cacheStatus");
         const btn = document.getElementById("cacheRefreshBtn");
-        const startMsg = `Starting cache refresh at ${new Date().toISOString()}...\n` +
-            [
-                "Providers: syncing...",
-                "Contracts: syncing...",
-                "Services: syncing...",
-                "Active Providers: deriving...",
-                "Active Services: deriving...",
-                "Subscribers: deriving..."
-            ].join("\n") +
-            "\n\nPlease wait...";
+        const startTs = new Date();
+        const keys = [
+            "Providers",
+            "Contracts",
+            "Services",
+            "Active Providers",
+            "Active Services",
+            "Subscribers",
+        ];
+        const progressState = () => keys.map((k) => `${k}: syncing...`).join("\n");
+        const startMsg = `Starting cache refresh at ${startTs.toISOString()}...\n${progressState()}\n\nPlease wait...`;
+        let progressTimer = null;
+        const spinner = ["|", "/", "-", "\\"];
+        let spinIdx = 0;
+        let refreshDone = false;
+        const tickProgress = () => {
+            if (refreshDone) return;
+            const elapsedSec = Math.round((Date.now() - startTs.getTime()) / 1000);
+            const spin = spinner[spinIdx];
+            spinIdx = (spinIdx + 1) % spinner.length;
+            updateModalBody(`${startMsg}\nProgress: ${spin}  Elapsed: ${elapsedSec}s`);
+        };
         if (statusEl) statusEl.textContent = "Refreshing cache...";
         if (btn) btn.disabled = true;
         // keep syncing state across full refresh flow to avoid flicker
         setSyncingLocal(true);
         showResultModal("Cache Refresh", startMsg);
+        progressTimer = setInterval(tickProgress, 750);
         try {
             const res = await fetch(apiUrl("/api/cache-refresh"), { method: "POST" });
             const data = await res.json().catch(() => ({}));
@@ -374,6 +374,8 @@
             const summary = orderedKeys.filter(k => k in results).map(k => summarize(k, results[k])).join("\n");
             const finishedMsg = `Finished cache refresh at ${new Date().toISOString()}\n${summary || "(no results)"}\n\nSync is complete, it is ok to close this modal window now.`;
             if (statusEl) statusEl.textContent = `Last refresh: ${new Date().toLocaleString()}`;
+            refreshDone = true;
+            if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
             updateModalBody(finishedMsg);
             // refresh header and listeners after cache refresh
             await refreshHeader();
@@ -382,8 +384,11 @@
             updateMetrics(results);
         } catch (err) {
             if (statusEl) statusEl.textContent = `Cache refresh failed: ${err}`;
+            refreshDone = true;
+            if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
             updateModalBody(`Failed to refresh cache:\n${err}`);
         } finally {
+            if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
             if (btn) btn.disabled = false;
             setSyncingLocal(false);
         }
@@ -574,6 +579,9 @@
     function closeModal() {
         const modal = document.getElementById("resultModal");
         if (modal) modal.classList.add("hidden");
+        // Refresh listeners/service options when any modal closes to ensure latest data
+        loadListeners();
+        refreshServiceTypes(true);
     }
 
     function copyListenerEndpoint(endpoint) {
@@ -612,6 +620,8 @@
     let listenersEditingId = null;
     let listenersCache = [];
     let serviceTypesCache = [];
+    let providersByServiceCache = {};
+    let providersFetchInFlight = {};
     let lastServiceTypesFetch = 0;
 
     function serviceOptionsHtml(selectedId) {
@@ -715,9 +725,9 @@
             const hostForListener = window.location.hostname || "localhost";
             const protoForListener = (window.location.protocol || "").startsWith("https") ? "https" : "http";
             const endpointUrl = portSafe ? `${protoForListener}://${hostForListener}:${portSafe}` : "–";
-            const topServicesDisplay = topServices.length
-                ? (() => {
-                    const rows = topServices.map((bp, idx) => {
+            let topServicesDisplay;
+            if (isEditing) {
+                const rows = topServices.length ? topServices.map((bp, idx) => {
                         const mon = bp && bp.provider_moniker;
                         const fallbackName = mon || l.provider_moniker || (bp && bp.provider_pubkey) || "(unknown)";
                         const inactive = (!mon && !l.provider_moniker) || fallbackName === "(Inactive)";
@@ -725,10 +735,11 @@
                         const rate = bp && bp.pay_as_you_go_rate && bp.pay_as_you_go_rate.amount !== undefined
                             ? `${bp.pay_as_you_go_rate.amount}${bp.pay_as_you_go_rate.denom || ""} / tx`
                             : "";
-                        const arrows = isEditing
-                            ? `<div class="top-service-actions">
+                        const actions = isEditing
+                            ? `<div class="top-service-actions" style="display:flex;gap:6px;flex-wrap:nowrap;">
                                     <button class="copy-btn" ${idx === 0 ? "disabled" : ""} onclick="moveTopService('${l.id}', ${idx}, -1)">↑</button>
                                     <button class="copy-btn" ${idx === topServices.length - 1 ? "disabled" : ""} onclick="moveTopService('${l.id}', ${idx}, 1)">↓</button>
+                                    <button class="copy-btn danger-btn" onclick="removeTopService('${l.id}', ${idx})">✕</button>
                                </div>`
                             : "";
                         const statusVal = bp && bp.status ? String(bp.status) : "";
@@ -750,21 +761,86 @@
                             <td class="ts-col-rate">${escapeHtml(rate)}</td>
                             <td class="ts-col-status">${statusDot}</td>
                             <td class="ts-col-rt">${escapeHtml(rtDisplay)}</td>
-                            ${isEditing ? `<td class="ts-col-actions">${arrows}</td>` : ""}
+                            ${isEditing ? `<td class="ts-col-actions">${actions}</td>` : ""}
                         </tr>`;
-                    }).join("");
-                    const head = isEditing
-                        ? `<tr><th>#</th><th>Provider</th><th>Price</th><th>Status</th><th>Response Time</th><th></th></tr>`
-                        : `<tr><th>#</th><th>Provider</th><th>Price</th><th>Status</th><th>Response Time</th></tr>`;
-                    return `<table class="top-services-table">
-                        <thead>${head}</thead>
-                        <tbody>${rows}</tbody>
-                    </table>`;
-                })()
-                : "—";
+                    }).join("") : `<tr><td colspan="6" class="muted small">No providers yet.</td></tr>`;
+                const head = `<tr><th>#</th><th>Provider</th><th>Price</th><th>Status</th><th>Response Time</th><th></th></tr>`;
+                const svcForTop = l.service_id || l.service;
+                const selectId = `addTopSvc-${l.id}`;
+                const cached = svcForTop ? providersByServiceCache[String(svcForTop)] : undefined;
+                const excludePks = topServices.map((ts) => ts?.provider_pubkey || ts?.pubkey || "");
+                if (svcForTop && cached === undefined) {
+                    ensureProvidersForService(svcForTop, l.id);
+                }
+                const hasCache = cached !== undefined;
+                const addControls = svcForTop
+                    ? (() => {
+                        const hasList = cached && Array.isArray(cached) && cached.length;
+                        if (!hasCache) {
+                            return `<div class="muted small">Loading providers for this service...</div>`;
+                        }
+                        if (!hasList) {
+                            return `<div class="muted small">No active providers found for this service.</div>`;
+                        }
+                        // even if all filtered out, still show disabled select/button so user sees the state
+                        const selectHtml = providerSelectHtml(svcForTop, selectId, excludePks);
+                        return `<div class="top-service-add-row" style="display:flex;align-items:center;gap:10px;padding:8px;margin-top:8px;">
+                                    ${selectHtml}
+                                    <button class="primary" style="white-space:nowrap;" onclick="addTopService('${l.id}', '${selectId}')">Add provider</button>
+                                </div>`;
+                    })()
+                    : `<div class="muted small">Select a service to add providers.</div>`;
+                topServicesDisplay = `<div class="top-services-table-wrap">
+                            <table class="top-services-table">
+                                <thead>${head}</thead>
+                                <tbody>${rows}</tbody>
+                            </table>
+                            ${addControls}
+                        </div>`;
+            } else {
+                topServicesDisplay = topServices.length
+                    ? (() => {
+                        const rows = topServices.map((bp, idx) => {
+                            const mon = bp && bp.provider_moniker;
+                            const fallbackName = mon || l.provider_moniker || (bp && bp.provider_pubkey) || "(unknown)";
+                            const inactive = (!mon && !l.provider_moniker) || fallbackName === "(Inactive)";
+                            const name = fallbackName;
+                            const rate = bp && bp.pay_as_you_go_rate && bp.pay_as_you_go_rate.amount !== undefined
+                                ? `${bp.pay_as_you_go_rate.amount}${bp.pay_as_you_go_rate.denom || ""} / tx`
+                                : "";
+                            const actions = "";
+                            const statusVal = bp && bp.status ? String(bp.status) : "";
+                            const statusDot = statusVal.toLowerCase() === "up"
+                                ? '<span class="status-dot dot-ok"></span>'
+                                : statusVal.toLowerCase() === "down"
+                                    ? '<span class="status-dot dot-err"></span>'
+                                    : "—";
+                            let rtDisplay = "—";
+                            if (bp && bp.rt_avg_ms !== undefined && bp.rt_avg_ms !== null) {
+                                const avgMs = Number(bp.rt_avg_ms);
+                                if (!Number.isNaN(avgMs)) {
+                                    rtDisplay = `${Math.round(avgMs)} ms`;
+                                }
+                            }
+                            return `<tr>
+                                <td class="ts-col-num">${idx + 1}</td>
+                                <td class="ts-col-name">${escapeHtml(name)}${inactive ? " (Inactive)" : ""}</td>
+                                <td class="ts-col-rate">${escapeHtml(rate)}</td>
+                                <td class="ts-col-status">${statusDot}</td>
+                                <td class="ts-col-rt">${escapeHtml(rtDisplay)}</td>
+                            </tr>`;
+                        }).join("");
+                        const head = `<tr><th>#</th><th>Provider</th><th>Price</th><th>Status</th><th>Response Time</th></tr>`;
+                        return `<table class="top-services-table">
+                            <thead>${head}</thead>
+                            <tbody>${rows}</tbody>
+                        </table>`;
+                    })()
+                    : "—";
+            }
             if (isEditing) {
                 return `
-                <tbody class="listener-block">
+                <tbody class="listener-block" id="listener-${l.id}">
                 <tr class="listener-main">
                     <td class="col-status">${statusSelect}</td>
                     <td>
@@ -772,9 +848,9 @@
                     </td>
                     <td class="mono">${portSafe || "–"}</td>
                     <td class="listener-actions-cell col-actions">
-                        <div class="actions align-right">
-                            <button class="primary" onclick="saveListener('${l.id}')">Save</button>
+                        <div class="actions align-right" style="display:flex;gap:8px;flex-wrap:nowrap;justify-content:flex-end;">
                             <button onclick="cancelEditListener()">Cancel</button>
+                            <button class="primary" onclick="saveListener('${l.id}')">Save</button>
                         </div>
                     </td>
                 </tr>
@@ -804,7 +880,7 @@
             }
             const statusDot = `<span class="status-dot ${String(l.status).toLowerCase() === "active" ? "dot-ok" : "dot-err"}"></span>`;
             return `
-            <tbody class="listener-block">
+            <tbody class="listener-block" id="listener-${l.id}">
             <tr class="listener-main">
                 <td class="col-status">${statusDot}</td>
                 <td>${escapeHtml(svcLabel || "—")}</td>
@@ -852,11 +928,7 @@
 
     function resetListenerForm() {
         const svc = document.getElementById("listenerService");
-        const status = document.getElementById("listenerStatus");
-        const wl = document.getElementById("listenerWhitelist");
         if (svc) svc.value = "";
-        if (status) status.value = "active";
-        if (wl) wl.value = "";
     }
 
     async function submitListenerForm(evt) {
@@ -866,9 +938,7 @@
             alert("Please select a service type before adding a listener.");
             return;
         }
-        const status = document.getElementById("listenerStatus")?.value || "active";
-        const whitelist = document.getElementById("listenerWhitelist")?.value || "";
-        const body = { status, whitelist_ips: whitelist };
+        const body = { status: "active", whitelist_ips: "" };
         if (svcId) body.service_id = svcId;
         try {
             const res = await fetch(apiUrl("/api/listeners"), {
@@ -884,9 +954,20 @@
                 }
                 throw new Error((data && (data.detail || data.error)) || res.status);
             }
+            const newId = data && data.listener && data.listener.id ? String(data.listener.id) : null;
             resetListenerForm();
             listenersEditingId = null;
             await loadListeners();
+            if (newId) {
+                const elId = `listener-${newId}`;
+                // wait for DOM render
+                setTimeout(() => {
+                    const el = document.getElementById(elId);
+                    if (el && typeof el.scrollIntoView === "function") {
+                        el.scrollIntoView({ behavior: "smooth", block: "start" });
+                    }
+                }, 50);
+            }
         } catch (err) {
             showResultModal("Add Listener", `Failed to add listener: ${err}`);
         }
@@ -894,6 +975,9 @@
 
     function editListener(id) {
         listenersEditingId = String(id);
+        const l = listenersCache.find((x) => String(x.id) === String(id));
+        const svc = l ? (l.service_id || l.service) : null;
+        if (svc) ensureProvidersForService(svc, id);
         renderListenersTable();
     }
 
@@ -946,6 +1030,67 @@
         const arr = [...l.top_services];
         const [item] = arr.splice(idx, 1);
         arr.splice(newIdx, 0, item);
+        l.top_services = arr;
+        renderListenersTable();
+    }
+
+    async function addTopService(listenerId, selectId) {
+        const listener = listenersCache.find((x) => String(x.id) === String(listenerId));
+        if (!listener) return;
+        const svcId = listener.service_id || listener.service;
+        if (!svcId) {
+            alert("Select a service type before adding providers.");
+            return;
+        }
+        const sid = String(svcId);
+        if (!providersByServiceCache[sid]) {
+            await ensureProvidersForService(sid, listenerId);
+        }
+        const selectEl = document.getElementById(selectId);
+        const selectedPk = (selectEl && selectEl.value) || "";
+        if (!selectedPk) {
+            alert("Choose a provider to add.");
+            return;
+        }
+        const existing = Array.isArray(listener.top_services) ? listener.top_services : [];
+        const already = existing.some(
+            (ts) => String(ts?.provider_pubkey || ts?.pubkey || "") === String(selectedPk)
+        );
+        if (already) {
+            alert("That provider is already in this list.");
+            return;
+        }
+        const choices = providersByServiceCache[sid] || [];
+        const match = choices.find((p) => String(p?.provider_pubkey || p?.pubkey || "") === String(selectedPk));
+        if (!match) {
+            alert("Provider not found for this service.");
+            return;
+        }
+        const entry = {
+            provider_pubkey: selectedPk,
+            service_id: sid,
+        };
+        const moniker = match.provider_moniker || match?.provider?.moniker;
+        if (moniker) entry.provider_moniker = moniker;
+        if (match.sentinel_url) entry.sentinel_url = match.sentinel_url;
+        if (match.metadata_uri) entry.metadata_uri = match.metadata_uri;
+        if (match.pay_as_you_go_rate) entry.pay_as_you_go_rate = match.pay_as_you_go_rate;
+        if (match.queries_per_minute !== undefined) entry.queries_per_minute = match.queries_per_minute;
+        if (match.min_contract_duration !== undefined) entry.min_contract_duration = match.min_contract_duration;
+        if (match.max_contract_duration !== undefined) entry.max_contract_duration = match.max_contract_duration;
+        if (match.settlement_duration !== undefined) entry.settlement_duration = match.settlement_duration;
+        const top = Array.isArray(listener.top_services) ? [...listener.top_services] : [];
+        top.push(entry);
+        listener.top_services = dedupTopServices(top);
+        renderListenersTable();
+    }
+
+    function removeTopService(listenerId, idx) {
+        const l = listenersCache.find((x) => String(x.id) === String(listenerId));
+        if (!l || !Array.isArray(l.top_services)) return;
+        const arr = [...l.top_services];
+        if (idx < 0 || idx >= arr.length) return;
+        arr.splice(idx, 1);
         l.top_services = arr;
         renderListenersTable();
     }
@@ -1193,6 +1338,70 @@
         return out;
     }
 
+    function providerOptionLabel(p) {
+        const pk = p?.provider_pubkey || p?.pubkey || "";
+        const mon = p?.provider_moniker
+            || p?.provider?.moniker
+            || (p?.metadata && p.metadata.config && p.metadata.config.moniker)
+            || (p?.metadata && p.metadata.moniker);
+        if (mon) return mon;
+        return pk ? formatPubkeyShort(pk) : "(unknown)";
+    }
+
+    async function ensureProvidersForService(serviceId, listenerId = null) {
+        const sid = String(serviceId || "").trim();
+        if (!sid) return [];
+        if (providersByServiceCache[sid]) return providersByServiceCache[sid];
+        if (providersFetchInFlight[sid]) return providersFetchInFlight[sid];
+        providersFetchInFlight[sid] = fetch(apiUrl(`/api/services/${encodeURIComponent(sid)}/providers`), { cache: "no-store" })
+            .then(res => res.json().catch(() => ({})))
+            .then((data) => {
+                const list = Array.isArray(data.providers) ? data.providers : [];
+                providersByServiceCache[sid] = list;
+                delete providersFetchInFlight[sid];
+                if (listenerId && listenersEditingId === String(listenerId)) {
+                    renderListenersTable();
+                }
+                return list;
+            })
+            .catch(() => {
+                providersByServiceCache[sid] = [];
+                delete providersFetchInFlight[sid];
+                if (listenerId && listenersEditingId === String(listenerId)) {
+                    renderListenersTable();
+                }
+                return [];
+            });
+        return providersFetchInFlight[sid];
+    }
+
+    function providerSelectHtml(serviceId, selectId, excludePks = []) {
+        const sid = String(serviceId || "");
+        const list = providersByServiceCache[sid];
+        if (!sid) {
+            return `<select id="${selectId}" class="select" disabled><option value="">Select a service first</option></select>`;
+        }
+        if (!list) {
+            return `<select id="${selectId}" class="select" disabled><option value="">Loading providers...</option></select>`;
+        }
+        const excludeSet = new Set((excludePks || []).map((x) => String(x || "")));
+        const filtered = list.filter((p) => {
+            const pk = p?.provider_pubkey || p?.pubkey || "";
+            if (!pk) return false;
+            return !excludeSet.has(String(pk));
+        });
+        if (!filtered.length) {
+            return `<select id="${selectId}" class="select" disabled><option value="">All providers already added</option></select>`;
+        }
+        const opts = filtered.map((p) => {
+            const pk = p?.provider_pubkey || p?.pubkey || "";
+            if (!pk) return "";
+            const label = providerOptionLabel(p);
+            return `<option value="${escapeHtml(pk)}">${escapeHtml(label)}</option>`;
+        }).filter(Boolean).join("");
+        return `<select id="${selectId}" class="select"><option value="">Select provider</option>${opts}</select>`;
+    }
+
     async function testListener(id) {
         await runListenerTests(id, 3, "Testing", true);
     }
@@ -1213,11 +1422,12 @@
             const body = `${header}<div id="pollSummary" class="muted small">${escapeHtml(summaryText)}</div><pre id="pollLogPre" class="mono" style="max-height:50vh;overflow:auto;"></pre>`;
             updateModalBodyHtml(body);
         };
-        const appendPollLog = (line) => {
-            pollLogText = pollLogText ? `${pollLogText}\n${line}` : line;
+        const appendPollLog = (line, newline = true) => {
+            const suffix = newline ? "\n" : "";
+            pollLogText = pollLogText ? `${pollLogText}${line}${suffix}` : `${line}${suffix}`;
             const pre = logEl();
             if (pre) {
-                pre.textContent = pollLogText;
+                pre.textContent = pollLogText.trimEnd();
                 pre.scrollTop = pre.scrollHeight;
             }
         };
@@ -1228,66 +1438,88 @@
             await testListener(id);
             return;
         }
-        const primary = top[0] || {};
-        const inferredSvc = listener?.service_id || listener?.service || primary.service_id || primary.service || "";
-        const basePayload = {
-            status: "active",
-            service_id: inferredSvc,
-            whitelist_ips: listener?.whitelist_ips || "",
-        };
-        let workingTop = dedupTopServices(JSON.parse(JSON.stringify(top)));
-        for (const ts of workingTop) {
-            const providerLabel = ts?.provider_moniker || ts?.provider_pubkey || "(unknown)";
-            appendPollLog(`Provider: ${providerLabel} (${ts?.provider_pubkey || "n/a"})`);
-            // reorder so this provider is first
-            const reordered = dedupTopServices([ts, ...workingTop.filter((t) => {
-                const keyT = `${t?.provider_pubkey || ""}::${t?.service_id || t?.service || ""}`;
-                const keyTs = `${ts?.provider_pubkey || ""}::${ts?.service_id || ts?.service || ""}`;
-                return keyT !== keyTs;
-            })]);
-            try {
-                await fetch(apiUrl(`/api/listeners/${encodeURIComponent(id)}`), {
-                    method: "PUT",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ ...basePayload, top_services: reordered }),
-                });
-                appendPollLog("  reordered list to prioritize this provider");
-            } catch (e) {
-                // ignore reorder errors, proceed
-                appendPollLog(`  reorder failed: ${e}`);
-            }
-            // run a few tests for this provider, respecting qpm if present
-            const qpm = ts && ts.queries_per_minute ? Number(ts.queries_per_minute) : 0;
-            const spacingMs = qpm > 0 ? Math.max(200, Math.round(60000 / qpm)) : 400;
-            const runs = 3;
-            for (let i = 0; i < runs; i++) {
+            const primary = top[0] || {};
+            const inferredSvc = listener?.service_id || listener?.service || primary.service_id || primary.service || "";
+            const basePayload = {
+                status: "active",
+                service_id: inferredSvc,
+                whitelist_ips: listener?.whitelist_ips || "",
+            };
+            let workingTop = dedupTopServices(JSON.parse(JSON.stringify(top)));
+            for (const ts of workingTop) {
+                const providerLabel = ts?.provider_moniker || "(unknown)";
+                appendPollLog(`Provider: ${providerLabel}`);
+                // reorder so this provider is first
+                const reordered = dedupTopServices([ts, ...workingTop.filter((t) => {
+                    const keyT = `${t?.provider_pubkey || ""}::${t?.service_id || t?.service || ""}`;
+                    const keyTs = `${ts?.provider_pubkey || ""}::${ts?.service_id || ts?.service || ""}`;
+                    return keyT !== keyTs;
+                })]);
                 try {
-                    const res = await fetch(apiUrl(`/api/listeners/${encodeURIComponent(id)}/test`), { method: "GET", cache: "no-store" });
-                    const ok = res.ok;
-                    const data = await res.json().catch(() => ({}));
-                    const err = !ok ? (data && (data.detail || data.error)) || res.statusText || res.status : "";
-                    appendPollLog(`  test ${i + 1}/${runs}: ${ok ? "ok" : `error ${err}`}`);
+                    await fetch(apiUrl(`/api/listeners/${encodeURIComponent(id)}`), {
+                        method: "PUT",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ ...basePayload, top_services: reordered }),
+                    });
+                    appendPollLog("  Performing tests and polling data...");
                 } catch (e) {
-                    appendPollLog(`  test ${i + 1}/${runs}: error ${e}`);
+                    // ignore reorder errors, proceed
+                    appendPollLog(`  reorder failed: ${e}`);
                 }
-                await new Promise(res => setTimeout(res, spacingMs));
+                // run a few tests for this provider, respecting qpm if present
+                const qpm = ts && ts.queries_per_minute ? Number(ts.queries_per_minute) : 0;
+                const spacingMs = qpm > 0 ? Math.max(200, Math.round(60000 / qpm)) : 400;
+                const runs = 3;
+                for (let i = 0; i < runs; i++) {
+                    try {
+                        const res = await fetch(apiUrl(`/api/listeners/${encodeURIComponent(id)}/test`), { method: "GET", cache: "no-store" });
+                        const ok = res.ok;
+                        const data = await res.json().catch(() => ({}));
+                        const err = !ok ? (data && (data.detail || data.error)) || res.statusText || res.status : "";
+                        appendPollLog(`  Test ${i + 1}/${runs}: ${ok ? "OK" : `Error ${err}`}`);
+                    } catch (e) {
+                        appendPollLog(`  Test ${i + 1}/${runs}: Error ${e}`);
+                    }
+                    await new Promise(res => setTimeout(res, spacingMs));
+                }
+                await loadListeners();
+                const refreshed = listenersCache.find((l) => String(l.id) === String(id));
+                if (refreshed && Array.isArray(refreshed.top_services)) {
+                    workingTop = dedupTopServices(JSON.parse(JSON.stringify(refreshed.top_services)));
+                }
+                appendPollLog(""); // blank line between providers
             }
-            await loadListeners();
-            const refreshed = listenersCache.find((l) => String(l.id) === String(id));
-            if (refreshed && Array.isArray(refreshed.top_services)) {
-                workingTop = dedupTopServices(JSON.parse(JSON.stringify(refreshed.top_services)));
-            }
-        }
         // sort by cheapest then lowest latency using the freshest cache after polling
         const latest = listenersCache.find((l) => String(l.id) === String(id));
         const latestTop = dedupTopServices(latest && Array.isArray(latest.top_services) ? latest.top_services : []);
         const sorted = [...latestTop].sort((a, b) => {
-            const rateA = (a?.pay_as_you_go_rate && a.pay_as_you_go_rate.amount !== undefined) ? Number(a.pay_as_you_go_rate.amount) : Number.POSITIVE_INFINITY;
-            const rateB = (b?.pay_as_you_go_rate && b.pay_as_you_go_rate.amount !== undefined) ? Number(b.pay_as_you_go_rate.amount) : Number.POSITIVE_INFINITY;
-            if (rateA !== rateB) return rateA - rateB;
-            const rtA = a?.rt_avg_ms !== undefined ? Number(a.rt_avg_ms) : Number.POSITIVE_INFINITY;
-            const rtB = b?.rt_avg_ms !== undefined ? Number(b.rt_avg_ms) : Number.POSITIVE_INFINITY;
-            return rtA - rtB;
+            const statusScore = (x) => {
+                const s = String(x?.status || "").toLowerCase();
+                if (s === "up") return 0;
+                if (s === "down") return 2;
+                return 1; // unknown
+            };
+            const price = (x) => {
+                const amt = x?.pay_as_you_go_rate?.amount;
+                const n = parseInt(amt, 10);
+                return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY;
+            };
+            const rt = (x) => {
+                const n = Number(x?.rt_avg_ms);
+                return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY;
+            };
+
+            const sA = statusScore(a);
+            const sB = statusScore(b);
+            if (sA !== sB) return sA - sB; // Up first, Down last
+
+            const pA = price(a);
+            const pB = price(b);
+            if (pA !== pB) return pA - pB; // lower price first
+
+            const rtA = rt(a);
+            const rtB = rt(b);
+            return rtA - rtB; // faster first
         });
         try {
             await fetch(apiUrl(`/api/listeners/${encodeURIComponent(id)}`), {

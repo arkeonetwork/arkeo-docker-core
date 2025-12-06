@@ -36,17 +36,18 @@
             </div>
             <div class="header-line" id="headerBalance"><strong>Provider Balance:</strong></div>
             <div class="header-line muted" id="headerBlock"><strong>Current Block:</strong></div>
-            <div class="header-line fixed-pill"><span id="headerRefreshPill" class="status-badge status-warn hidden">Loading...</span></div>
         </div>
     </div>
 </div>
 
 <div class="card">
     <div class="row-between align-center">
-        <h2 class="mt-0 mb-0">Claim Totals</h2>
-        <button class="btn" onclick="refreshClaimTotals()">Refresh Amounts</button>
+        <h2 class="mt-0 mb-0">Provider Dashboard</h2>
     </div>
-    <div id="claimTotals" class="claims-grid muted card-body">(loading claim totals...)</div>
+    <div id="claimTotals" class="claims-grid muted card-body" data-has-content="0">(loading claim totals...)</div>
+    <div class="timer-band" aria-label="Claims refresh timer">
+        <div id="claimsTimerFill" class="timer-fill running"></div>
+    </div>
 </div>
 
 <div class="card">
@@ -61,10 +62,6 @@
                     <button class="primary" onclick="controlSentinel('restart')">Restart Sentinel</button>
                     <button class="primary" onclick="controlSentinel('stop')">Stop Sentinel</button>
                     <button class="primary" onclick="controlSentinel('start')">Start Sentinel</button>
-                </div>
-                <div class="actions">
-                    <button class="primary" onclick="runProviderClaims()">Provider Claims</button>
-                    <button class="primary" onclick="runProviderTotals()">Provider Totals</button>
                 </div>
             </div>
         </div>
@@ -150,6 +147,13 @@
 <div class="card">
     <div class="section">
 
+        <h3>Claim Status</h3>
+        <div class="actions mb-8">
+            <button class="primary" onclick="runClaimsAndContracts()">Run Claims + Refresh Contracts</button>
+        </div>
+        <div class="muted" id="claimsHeartbeat">Last claims run: (unknown)</div>
+        <pre id="claimStatusLog">Waiting for updates...</pre>
+
         <h3>Debug</h3>
         <h4>Sentinel Status</h4>
         <pre id="sentinelStatus">Loading...</pre>
@@ -186,6 +190,36 @@
         const proto = (window.location && window.location.protocol === "https:") ? "https:" : "http:";
         const cleaned = (host || "").replace(/^https?:\/\//, "").replace(/\/+$/, "");
         return `${proto}//${cleaned}${port ? `:${port}` : ""}`;
+    }
+
+    async function refreshVitals() {
+        const fetchNoStore = (url) => fetch(url, { cache: "no-store" });
+        const parseSafe = async (settled) => {
+            if (settled.status !== "fulfilled" || !settled.value) return { error: String(settled.reason || "request failed") };
+            try {
+                if (!settled.value.ok) {
+                    const text = await settled.value.text().catch(() => "");
+                    return { error: `${settled.value.status} ${settled.value.statusText || ""}`, body: text };
+                }
+                return await settled.value.json();
+            } catch (err) {
+                return { error: "invalid json", detail: String(err) };
+            }
+        };
+        try {
+            const [balRes, heightRes] = await Promise.allSettled([
+                fetchNoStore(resolveApi("/api/balance")),
+                fetchNoStore(resolveApi("/api/block-height")),
+            ]);
+            lastBalance = await parseSafe(balRes);
+            lastBlockHeight = await parseSafe(heightRes);
+        } catch (e) {
+            // leave last values as-is on error
+        }
+        const headerBalanceEl = document.getElementById("headerBalance");
+        const headerBlockEl = document.getElementById("headerBlock");
+        if (headerBalanceEl) headerBalanceEl.innerHTML = `<strong>Provider Balance:</strong> ${formatBalance(lastBalance)}`;
+        if (headerBlockEl) headerBlockEl.innerHTML = `<strong>Current Block:</strong> ${formatBlockHeight(lastBlockHeight)}`;
     }
 
     function extractHostFromValue(val) {
@@ -234,9 +268,14 @@
         // Do not override adminApiBase; keep using the page host for API calls
     }
 
-    let providerServicesData = [];
-    let providerServiceTotals = [];
-    let providerServiceLookup = {};
+let providerServicesData = [];
+let providerServiceTotals = [];
+let providerServiceLookup = {};
+let lastSentinelConfig = null;
+let lastBalance = null;
+let lastBlockHeight = null;
+let lastClaimsRun = null;
+let lastClaimsHeartbeat = null;
     let currentPubkey = "";
 
     async function refreshInfo() {
@@ -248,21 +287,12 @@
         if (headerPill) headerPill.style.display = "inline-block";
         try {
             const fetchNoStore = (url) => fetch(url, { cache: "no-store" });
-            const [provRes, balRes, keyRes, svcRes, allSvcRes, sentRes, heightRes, sCfgRes, metaRes, totalsRes] = await Promise.allSettled([
+            const [provRes, keyRes, sentRes, sCfgRes, metaRes] = await Promise.allSettled([
                 fetchNoStore(resolveApi("/api/provider-info")),
-                fetchNoStore(resolveApi("/api/balance")),
                 fetchNoStore(resolveApi("/api/key")),
-                fetchNoStore(resolveApi("/api/provider-services")),
-                fetchNoStore(resolveApi("/api/services")),
                 fetchNoStore(resolveApi("/api/sentinel-status")),
-                fetchNoStore(resolveApi("/api/block-height")),
                 fetchNoStore(resolveApi("/api/sentinel-config")),
                 fetchNoStore(resolveApi("/api/sentinel-metadata?quiet=1")),
-                fetch(resolveApi("/api/provider-contracts-summary"), {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
-                    body: "{}",
-                }),
             ]);
             const parseSafe = async (settled) => {
                 if (settled.status !== "fulfilled" || !settled.value) return { error: String(settled.reason || "request failed") };
@@ -277,15 +307,12 @@
                 }
             };
             const prov = await parseSafe(provRes);
-            const bal = await parseSafe(balRes);
             const key = await parseSafe(keyRes);
-            const services = await parseSafe(svcRes);
-            const allServices = await parseSafe(allSvcRes);
             const sentinelStatus = await parseSafe(sentRes);
-            const height = await parseSafe(heightRes);
             const sentinelConfig = await parseSafe(sCfgRes);
             const meta = await parseSafe(metaRes);
-            const totals = await parseSafe(totalsRes);
+            // cache sentinel config for service rendering
+            lastSentinelConfig = sentinelConfig && !sentinelConfig.error ? sentinelConfig : null;
             // Provider summary at top
             const metaCfg = (meta && meta.metadata && meta.metadata.config) || {};
             const envMeta = (prov && prov.provider_metadata) || {};
@@ -308,8 +335,6 @@
             currentPubkey = bech32Pubkey || "";
             const shortPubkey = formatPubkeyShort(currentPubkey);
             const shortAddress = formatAddressShort(bech32Address);
-            const balanceAmt = formatBalance(bal);
-            const blockHeight = formatBlockHeight(height);
             const summaryEl = document.getElementById("providerSummary");
             if (summaryEl) summaryEl.innerHTML = "";
             const headerMonikerEl = document.getElementById("headerMoniker");
@@ -320,8 +345,8 @@
             const headerAddrEl = document.getElementById("headerAddress");
             if (headerMonikerEl) headerMonikerEl.textContent = moniker || "";
             if (headerDescEl) headerDescEl.textContent = desc || "";
-            if (headerBalanceEl) headerBalanceEl.innerHTML = `<strong>Provider Balance:</strong> ${balanceAmt}`;
-            if (headerBlockEl) headerBlockEl.innerHTML = `<strong>Current Block:</strong> ${blockHeight}`;
+            if (headerBalanceEl) headerBalanceEl.innerHTML = `<strong>Provider Balance:</strong> ${formatBalance(lastBalance)}`;
+            if (headerBlockEl) headerBlockEl.innerHTML = `<strong>Current Block:</strong> ${formatBlockHeight(lastBlockHeight)}`;
             if (headerPubEl) {
                 const valEl = document.getElementById("headerPubkeyValue");
                 if (valEl) valEl.textContent = shortPubkey;
@@ -332,7 +357,60 @@
                 if (addrEl) addrEl.textContent = shortAddress || "(unavailable)";
                 headerAddrEl.dataset.fullAddress = bech32Address || "";
             }
-            const svcEl = document.getElementById("providerServices");
+            renderEndpointPanel(sentinelConfig, prov, envMeta);
+            debugEl.textContent = JSON.stringify(
+                {
+                    provider_info: prov,
+                    balance: lastBalance,
+                    key: key,
+                    sentinel_metadata: meta,
+                    sentinel_config: sentinelConfig,
+                    sentinel_status: sentinelStatus,
+                    block_height: lastBlockHeight,
+                },
+                null,
+                2
+            );
+            if (sentinelConfig && sentinelConfig.raw) {
+                const sentinelYamlEl = document.getElementById("sentinelYamlStatus");
+                if (sentinelYamlEl) {
+                    sentinelYamlEl.textContent = sentinelConfig.raw;
+                }
+                const sentinelEnvEl = document.getElementById("sentinelEnvStatus");
+                if (sentinelEnvEl && sentinelConfig.env_file) {
+                    sentinelEnvEl.textContent = JSON.stringify(sentinelConfig.env_file, null, 2);
+                }
+            }
+            updateSentinelStatusDisplay(sentinelStatus);
+        } catch (e) {
+            debugEl.textContent = "Failed to load info: " + e;
+        }
+        if (refreshBadge) refreshBadge.style.display = "none";
+        if (headerPill) headerPill.style.display = "none";
+    }
+
+    async function refreshServices() {
+        const fetchNoStore = (url) => fetch(url, { cache: "no-store" });
+        const parseSafe = async (settled) => {
+            if (settled.status !== "fulfilled" || !settled.value) return { error: String(settled.reason || "request failed") };
+            try {
+                if (!settled.value.ok) {
+                    const text = await settled.value.text().catch(() => "");
+                    return { error: `${settled.value.status} ${settled.value.statusText || ""}`, body: text };
+                }
+                return await settled.value.json();
+            } catch (err) {
+                return { error: "invalid json", detail: String(err) };
+            }
+        };
+        try {
+            const [svcRes, allSvcRes] = await Promise.allSettled([
+                fetchNoStore(resolveApi("/api/provider-services")),
+                fetchNoStore(resolveApi("/api/services")),
+            ]);
+            const services = await parseSafe(svcRes);
+            const allServices = await parseSafe(allSvcRes);
+
             const svcLookup = {};
             if (allServices && Array.isArray(allServices.services)) {
                 allServices.services.forEach(s => {
@@ -343,7 +421,6 @@
                     if (key) {
                         const val = { name, description: desc, service: s.service };
                         svcLookup[key] = val;
-                        // also store numeric key variant to be safe
                         const numKey = Number(key);
                         if (!Number.isNaN(numKey)) {
                             svcLookup[String(numKey)] = val;
@@ -353,11 +430,11 @@
             }
             providerServiceLookup = svcLookup;
             providerServicesData = services && Array.isArray(services.services) ? services.services : [];
-            providerServiceTotals = (totals && Array.isArray(totals.service_totals)) ? totals.service_totals : [];
+
             const sentinelServices = [];
-            renderEndpointPanel(sentinelConfig, prov, envMeta);
-            if (sentinelConfig && sentinelConfig.config && Array.isArray(sentinelConfig.config.services)) {
-                sentinelConfig.config.services.forEach(ss => {
+            const cfg = lastSentinelConfig;
+            if (cfg && cfg.config && Array.isArray(cfg.config.services)) {
+                cfg.config.services.forEach(ss => {
                     if (!ss || typeof ss !== "object") return;
                     const sid = ss.id !== undefined && ss.id !== null ? String(ss.id) : "";
                     const sname = ss.name || ss.service;
@@ -365,6 +442,8 @@
                     else if (sname) sentinelServices.push({ name: sname });
                 });
             }
+
+            const svcEl = document.getElementById("providerServices");
             if (providerServicesData && providerServicesData.length) {
                 const items = providerServicesData.map((s, idx) => {
                     let rawId = "";
@@ -382,7 +461,6 @@
 
                     let resolvedName = rawName;
                     const lookupById = rawId ? svcLookup[rawId] : "";
-                    // lookupById may be string or object; normalize
                     const lookupName = lookupById && typeof lookupById === "object" ? (lookupById.name || lookupById.label || lookupById.service || "") : lookupById;
                     const lookupDesc = lookupById && typeof lookupById === "object" ? lookupById.description : "";
                     if (!resolvedName || resolvedName === rawId || /^[0-9]+$/.test(resolvedName)) {
@@ -434,43 +512,40 @@
                 });
                 svcEl.innerHTML = `<div class="service-grid full-width">${items.join("")}</div>`;
             } else if (services && services.error) {
-                svcEl.textContent = "Provider services unavailable";
-            } else {
+                if (svcEl) svcEl.textContent = "Provider services unavailable";
+            } else if (svcEl) {
                 svcEl.textContent = "No provider services found";
             }
             renderClaimTotals();
-            debugEl.textContent = JSON.stringify(
-                {
-                    provider_info: prov,
-                    balance: bal,
-                    key: key,
-                    sentinel_metadata: meta,
-                    sentinel_config: sentinelConfig,
-                    provider_services: services,
-                    all_services: allServices,
-                    sentinel_status: sentinelStatus,
-                    block_height: height,
-                    provider_totals: totals,
-                },
-                null,
-                2
-            );
-            if (sentinelConfig && sentinelConfig.raw) {
-                const sentinelYamlEl = document.getElementById("sentinelYamlStatus");
-                if (sentinelYamlEl) {
-                    sentinelYamlEl.textContent = sentinelConfig.raw;
-                }
-                const sentinelEnvEl = document.getElementById("sentinelEnvStatus");
-                if (sentinelEnvEl && sentinelConfig.env_file) {
-                    sentinelEnvEl.textContent = JSON.stringify(sentinelConfig.env_file, null, 2);
-                }
-            }
-            updateSentinelStatusDisplay(sentinelStatus);
         } catch (e) {
-            debugEl.textContent = "Failed to load info: " + e;
+            const svcEl = document.getElementById("providerServices");
+            if (svcEl) svcEl.textContent = "Failed to load services: " + e;
         }
-        if (refreshBadge) refreshBadge.style.display = "none";
-        if (headerPill) headerPill.style.display = "none";
+    }
+
+    async function refreshContractTotals() {
+        const el = document.getElementById("claimTotals");
+        const hasContent = el && el.dataset.hasContent === "1";
+        if (el && !hasContent) {
+            el.textContent = "(loading claim totals...)";
+            el.classList.add("muted");
+        }
+        try {
+            const res = await fetch(resolveApi("/api/provider-contracts-summary"), {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+                body: "{}",
+            });
+            const data = await res.json();
+            if (res.ok) {
+                providerServiceTotals = Array.isArray(data.service_totals) ? data.service_totals : [];
+            } else {
+                // leave previous totals in place on error to avoid UI jump
+            }
+        } catch (e) {
+            // leave previous totals in place on error to avoid UI jump
+        }
+        renderClaimTotals();
     }
 
     function updateSentinelStatusDisplay(sentinelStatus) {
@@ -493,6 +568,10 @@
             statusEl.textContent = display;
         } else {
             statusEl.textContent = "Sentinel status unavailable";
+            if (badgeTop) {
+                badgeTop.className = "status-badge status-warn";
+                badgeTop.textContent = "Sentinel status unavailable";
+            }
         }
     }
 
@@ -501,14 +580,14 @@
             (balanceObj && balanceObj.balance && balanceObj.balance.result && Array.isArray(balanceObj.balance.result) && balanceObj.balance.result) ||
             (balanceObj && balanceObj.balance && balanceObj.balance.balances && Array.isArray(balanceObj.balance.balances) && balanceObj.balance.balances) ||
             [];
-        if (!coins.length) return "(unknown)";
+        if (!coins.length) return "0 uarkeo";
         const fmtCoin = (c) => {
             const amount = c.amount || c.Amount || "";
             const denom = c.denom || c.Denom || "";
             if (denom === "uarkeo") {
                 const num = parseInt(amount || "0", 10);
                 const val = num / 1e8;
-                return `${val.toLocaleString("en-US", { minimumFractionDigits: 8, maximumFractionDigits: 8 })} ${denom}`;
+                return `${val.toLocaleString("en-US", { minimumFractionDigits: 8, maximumFractionDigits: 8 })} ARKEO`;
             }
             return `${amount}${denom}`;
         };
@@ -556,12 +635,14 @@
         if (!providerServicesData || !providerServicesData.length) {
             el.textContent = "No provider services found.";
             el.classList.add("muted");
+            el.dataset.hasContent = "0";
             return;
         }
         const active = providerServicesData.filter((s) => isServiceActive(s && s.status));
         if (!active.length) {
             el.textContent = "No active services.";
             el.classList.add("muted");
+            el.dataset.hasContent = "0";
             return;
         }
         const totalsMap = new Map();
@@ -578,28 +659,27 @@
             const displayName = (lookup && (lookup.description || lookup.name || lookup.service)) || rawName || rawId;
             const totalEntry = totalsMap.get(serviceKey);
             const paid = totalEntry ? totalEntry.tokens_paid_total_uarkeo || 0 : 0;
-            const remaining = totalEntry ? totalEntry.remaining_uarkeo || 0 : 0;
-            const activeCount = totalEntry ? totalEntry.active_contracts || 0 : 0;
-            const settledCount = totalEntry ? totalEntry.settled_contracts || 0 : 0;
-            const paygCount = totalEntry ? totalEntry.payg_requests_total || 0 : 0;
-            const { arkeo, uarkeo } = formatArkeoTotals(paid);
-            const remainingFmt = formatArkeoTotals(remaining).arkeo;
+            const txCount = totalEntry ? (totalEntry.tx_count || totalEntry.payg_requests_total || 0) : 0;
+            // Format uarkeo as ARKEO with 8 decimal places (1 ARKEO = 1e8 uarkeo)
+            const arkeoVal = paid / 1e8;
+            const arkeoStr = arkeoVal.toLocaleString("en-US", { minimumFractionDigits: 8, maximumFractionDigits: 8 });
             return `
                 <div class="claim-card">
                     <div class="claim-title">${displayName || "(unknown service)"}</div>
-                    <div class="claim-metric">${arkeo}</div>
-                    <div class="claim-meta">${uarkeo} · active: ${activeCount} · settled: ${settledCount}${paygCount ? ` · payg reqs: ${paygCount}` : ""}</div>
-                    <div class="claim-meta">Remaining: ${remainingFmt}</div>
+                    <div class="claim-metric">${arkeoStr} ARKEO earned</div>
+                    <div class="claim-meta">${txCount} transactions</div>
                 </div>
             `;
         });
         el.classList.remove("muted");
-        el.innerHTML = cards.join("");
+        el.innerHTML = cards.join("") || "<div class=\"muted\">No claim totals available.</div>";
+        el.dataset.hasContent = "1";
     }
 
     async function refreshClaimTotals() {
         const el = document.getElementById("claimTotals");
-        if (el) {
+        const hasContent = el && el.dataset.hasContent === "1";
+        if (el && !hasContent) {
             el.textContent = "Refreshing claim totals...";
             el.classList.add("muted");
         }
@@ -612,12 +692,100 @@
             const data = await res.json();
             if (res.ok) {
                 providerServiceTotals = Array.isArray(data.service_totals) ? data.service_totals : [];
+                if (data.last_claims_run && data.last_claims_run !== lastClaimsRun) {
+                    lastClaimsRun = data.last_claims_run;
+                    startClaimsTimerBand();
+                    updateClaimsHeartbeat(lastClaimsRun);
+                }
                 renderClaimTotals();
-            } else if (el) {
+            } else if (!hasContent && el) {
                 el.textContent = "Error: " + JSON.stringify(data);
             }
         } catch (e) {
-            if (el) el.textContent = "Error: " + e;
+            if (!hasContent && el) el.textContent = "Error: " + e;
+        }
+    }
+
+    function startClaimsTimerBand() {
+        const fill = document.getElementById("claimsTimerFill");
+        if (!fill) return;
+        fill.classList.remove("running");
+        // force reflow to restart the animation
+        void fill.offsetWidth;
+        fill.classList.add("running");
+    }
+
+    async function runClaimsAndContracts() {
+        const logEl = document.getElementById("claimStatusLog");
+        const append = (line) => {
+            if (!logEl) return;
+            const ts = new Date().toISOString();
+            const text = logEl.textContent || "";
+            logEl.textContent = `${ts} ${line}\n${text}`;
+        };
+        append("Starting provider claims...");
+        try {
+            const claimsRes = await fetch(resolveApi("/api/provider-claims"), { method: "POST" });
+            const claimsData = await claimsRes.json().catch(() => ({}));
+            if (claimsRes.ok) {
+                append(`Claims ok: ${JSON.stringify(claimsData)}`);
+            } else {
+                append(`Claims error: ${JSON.stringify(claimsData)}`);
+            }
+        } catch (e) {
+            append(`Claims request failed: ${e}`);
+        }
+        append("Waiting 10s for inclusion...");
+        await new Promise(res => setTimeout(res, 10000));
+        append("Refreshing contract totals...");
+        try {
+            const ctrRes = await fetch(resolveApi("/api/provider-contracts-summary"), {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+                body: "{}",
+            });
+            const ctrData = await ctrRes.json().catch(() => ({}));
+            if (ctrRes.ok) {
+                append(`Contracts ok: ${JSON.stringify(ctrData)}`);
+                providerServiceTotals = Array.isArray(ctrData.service_totals) ? ctrData.service_totals : providerServiceTotals;
+                if (ctrData.last_claims_run && ctrData.last_claims_run !== lastClaimsRun) {
+                    lastClaimsRun = ctrData.last_claims_run;
+                    startClaimsTimerBand();
+                    updateClaimsHeartbeat(lastClaimsRun);
+                }
+                renderClaimTotals();
+            } else {
+                append(`Contracts error: ${JSON.stringify(ctrData)}`);
+            }
+        } catch (e) {
+            append(`Contracts request failed: ${e}`);
+        }
+        startClaimsTimerBand();
+    }
+
+    function updateClaimsHeartbeat(ts) {
+        const el = document.getElementById("claimsHeartbeat");
+        if (!el) return;
+        if (!ts) {
+            el.textContent = "Last claims run: (unknown)";
+            return;
+        }
+        el.textContent = `Last claims run: ${ts}`;
+        lastClaimsHeartbeat = ts;
+    }
+
+    async function refreshClaimsHeartbeat() {
+        try {
+            const res = await fetch(resolveApi("/api/claims-heartbeat"), { cache: "no-store" });
+            const data = await res.json().catch(() => ({}));
+            const ts = data.last_claims_run;
+            if (ts && ts !== lastClaimsRun) {
+                lastClaimsRun = ts;
+                startClaimsTimerBand();
+            }
+            updateClaimsHeartbeat(ts || lastClaimsRun || lastClaimsHeartbeat);
+        } catch (e) {
+            // keep prior heartbeat display
         }
     }
 
@@ -684,21 +852,6 @@
             }
         } catch (e) {
                 showResultModal("Sentinel Control", `${action} request error: ${e}`);
-        }
-    }
-
-    async function runProviderClaims() {
-        showResultModal("Provider Claims", "Running provider claims...");
-        try {
-            const res = await fetch(resolveApi("/api/provider-claims"), { method: "POST" });
-            const data = await res.json();
-            if (res.ok) {
-                showResultModal("Provider Claims", JSON.stringify(data, null, 2));
-            } else {
-                showResultModal("Provider Claims", "Error: " + JSON.stringify(data, null, 2));
-            }
-        } catch (e) {
-            showResultModal("Provider Claims", "Request failed: " + e);
         }
     }
 
@@ -936,9 +1089,17 @@
     window.addEventListener('load', () => {
         getVersion();
         refreshInfo();
-        refreshSentinelStatus();
-        setInterval(refreshSentinelStatus, 5000);
-        setInterval(refreshInfo, 10000);
+        refreshServices();
+        refreshContractTotals();
+        startClaimsTimerBand();
+        refreshVitals();
+        refreshClaimsHeartbeat();
+        setInterval(refreshInfo, 5000);
+        setInterval(refreshServices, 15000);
+        setInterval(refreshContractTotals, 15000);
+        setInterval(startClaimsTimerBand, 62000);
+        setInterval(refreshVitals, 15000);
+        setInterval(refreshClaimsHeartbeat, 30000);
     });
     document.addEventListener('visibilitychange', () => {
         if (!document.hidden) {

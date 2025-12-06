@@ -1328,9 +1328,8 @@ def _normalize_top_services(entries) -> list[dict]:
         # keep service id for dedup/lookup, but avoid padding with empty string
         if svc not in (None, ""):
             entry["service_id"] = str(svc)
+        # Persist only dynamic/runtime fields; static metadata is hydrated from caches.
         for key in (
-            "provider_moniker",
-            "sentinel_url",
             "status",
             "status_updated_at",
             "rt_avg_ms",
@@ -1344,6 +1343,120 @@ def _normalize_top_services(entries) -> list[dict]:
     return normalized
 
 
+def _provider_moniker_from_meta(p: dict | None) -> str | None:
+    if not isinstance(p, dict):
+        return None
+    meta = p.get("metadata") or {}
+    moniker = (
+        (meta.get("config") or {}).get("moniker")
+        or meta.get("moniker")
+        or (p.get("provider") or {}).get("moniker")
+        or p.get("provider_moniker")
+    )
+    return moniker or None
+
+
+def _build_active_maps():
+    """Return (active_map, provider_meta_map, svc_lookup) for enrichment."""
+    active_map = {}
+    provider_meta_map = {}
+    try:
+        data = _load_cached("active_services")
+        entries = data.get("active_services") if isinstance(data, dict) else []
+        if isinstance(entries, list):
+            for e in entries:
+                if not isinstance(e, dict):
+                    continue
+                pk = e.get("provider_pubkey")
+                sid_val = e.get("service_id") or e.get("service") or e.get("id")
+                if pk is None or sid_val is None:
+                    continue
+                active_map[(str(pk), str(sid_val))] = e
+    except Exception:
+        pass
+    try:
+        ap = _load_cached("active_providers")
+        prov_list = ap.get("providers") if isinstance(ap, dict) else []
+        if isinstance(prov_list, list):
+            for p in prov_list:
+                if not isinstance(p, dict):
+                    continue
+                pk = p.get("pubkey") or p.get("pub_key") or p.get("pubKey")
+                if pk:
+                    provider_meta_map[pk] = p
+    except Exception:
+        pass
+    svc_lookup = _load_active_service_types_lookup()
+    return active_map, provider_meta_map, svc_lookup
+
+
+def _enrich_top_services_for_response(top: list, svc_id: str, active_map: dict, provider_meta_map: dict) -> list:
+    """Enrich top_services entries with cache data for responses (not persisted)."""
+    enriched: list[dict] = []
+    sid_str = str(svc_id or "")
+    for ts in top if isinstance(top, list) else []:
+        if not isinstance(ts, dict):
+            continue
+        pk = ts.get("provider_pubkey")
+        entry = dict(ts)
+        key = (str(pk), sid_str)
+        active = active_map.get(key) or {}
+        raw = active.get("raw") if isinstance(active, dict) else {}
+        if not entry.get("metadata_uri"):
+            entry["metadata_uri"] = active.get("metadata_uri") or (raw.get("metadata_uri") if isinstance(raw, dict) else None)
+        if not entry.get("sentinel_url"):
+            mu = entry.get("metadata_uri")
+            if _is_external(mu):
+                entry["sentinel_url"] = _sentinel_from_metadata_uri(mu)
+        if not entry.get("provider_moniker"):
+            entry["provider_moniker"] = _provider_moniker_from_meta(provider_meta_map.get(pk)) or _active_provider_moniker(pk)
+        if "pay_as_you_go_rate" not in entry or entry.get("pay_as_you_go_rate") is None:
+            if isinstance(raw, dict):
+                entry["pay_as_you_go_rate"] = _extract_paygo_rate(raw)
+        if entry.get("queries_per_minute") is None and isinstance(raw, dict):
+            entry["queries_per_minute"] = raw.get("queries_per_minute")
+        if entry.get("min_contract_duration") is None and isinstance(raw, dict):
+            entry["min_contract_duration"] = raw.get("min_contract_duration")
+        if entry.get("max_contract_duration") is None and isinstance(raw, dict):
+            entry["max_contract_duration"] = raw.get("max_contract_duration")
+        if entry.get("settlement_duration") is None and isinstance(raw, dict):
+            entry["settlement_duration"] = raw.get("settlement_duration")
+        enriched.append(entry)
+    return enriched
+
+
+def _enrich_listener_for_response(listener: dict) -> dict:
+    """Return a copy of listener enriched with cache data for API responses."""
+    if not isinstance(listener, dict):
+        return {}
+    l = dict(listener)
+    active_map, provider_meta_map, svc_lookup = _build_active_maps()
+    sid = l.get("service_id") or l.get("service")
+    top = l.get("top_services") if isinstance(l.get("top_services"), list) else []
+    l["top_services"] = _enrich_top_services_for_response(top, sid, active_map, provider_meta_map)
+    # for response only: set provider_pubkey to primary top entry for compatibility with UI/runtime
+    if l["top_services"]:
+        primary = l["top_services"][0]
+        if isinstance(primary, dict):
+            l["provider_pubkey"] = primary.get("provider_pubkey")
+    svc_meta = svc_lookup.get(str(sid) or "", {})
+    if svc_meta:
+        l.setdefault("service_name", svc_meta.get("service_name", ""))
+        l.setdefault("service_description", svc_meta.get("service_description", ""))
+    # hydrate primary provider moniker/sentinel for UI convenience
+    if not l.get("provider_moniker") and l.get("provider_pubkey"):
+        l["provider_moniker"] = _provider_moniker_from_meta(provider_meta_map.get(l.get("provider_pubkey"))) or _active_provider_moniker(l.get("provider_pubkey"))
+    if not l.get("sentinel_url") and l.get("top_services"):
+        primary = l["top_services"][0]
+        if isinstance(primary, dict):
+            sent = primary.get("sentinel_url")
+            if not sent:
+                mu = primary.get("metadata_uri")
+                if _is_external(mu):
+                    sent = _sentinel_from_metadata_uri(mu)
+            if sent:
+                l["sentinel_url"] = sent
+    return l
 def _safe_int(val, default: int = 0) -> int:
     try:
         return int(str(val))
@@ -1912,7 +2025,39 @@ def _candidate_providers(cfg: dict) -> list[dict]:
     """Build an ordered list of provider candidates for failover."""
     candidates: list[dict] = []
     top = cfg.get("top_services")
+    if not top:
+        return []
     svc_id_for_lookup = cfg.get("service_id") or cfg.get("service")
+    # cache lookups for active services/providers
+    active_lookup = {}
+    try:
+        data = _load_cached("active_services")
+        entries = data.get("active_services") if isinstance(data, dict) else []
+        if isinstance(entries, list):
+            for e in entries:
+                if not isinstance(e, dict):
+                    continue
+                pk = e.get("provider_pubkey")
+                sid_val = e.get("service_id") or e.get("service") or e.get("id")
+                if not pk or sid_val is None:
+                    continue
+                active_lookup[(str(pk), str(sid_val))] = e
+    except Exception:
+        pass
+    prov_meta_cache = {}
+    try:
+        ap = _load_cached("active_providers")
+        prov_list = ap.get("providers") if isinstance(ap, dict) else []
+        if isinstance(prov_list, list):
+            for p in prov_list:
+                if not isinstance(p, dict):
+                    continue
+                    # skip bad rows
+                pk = p.get("pubkey") or p.get("pub_key") or p.get("pubKey")
+                if pk:
+                    prov_meta_cache[pk] = p
+    except Exception:
+        pass
     if isinstance(top, list):
         for ts in top:
             if not isinstance(ts, dict):
@@ -1921,11 +2066,9 @@ def _candidate_providers(cfg: dict) -> list[dict]:
             if not pk:
                 continue
             svc_for_ts = ts.get("service_id") or ts.get("service") or svc_id_for_lookup
-            active = _active_service_lookup(pk, svc_for_ts)
+            active = active_lookup.get((str(pk), str(svc_for_ts))) or _active_service_lookup(pk, svc_for_ts)
             active_raw = active.get("raw") if isinstance(active, dict) else {}
-            mu = ts.get("metadata_uri") or (active.get("metadata_uri") if isinstance(active, dict) else None)
-            if not mu and isinstance(active_raw, dict):
-                mu = active_raw.get("metadata_uri")
+            mu = (active.get("metadata_uri") if isinstance(active, dict) else None) or active_raw.get("metadata_uri")
             sentinel_url = _normalize_sentinel_url(ts.get("sentinel_url")) if ts.get("sentinel_url") else None
             if not sentinel_url and _is_external(mu):
                 sentinel_url = _sentinel_from_metadata_uri(mu)
@@ -1934,24 +2077,19 @@ def _candidate_providers(cfg: dict) -> list[dict]:
                 sentinel_url = _normalize_sentinel_url(cfg.get("provider_sentinel_api"))
             if not sentinel_url:
                 continue  # skip candidates without a usable sentinel URL
-            settle = ts.get("settlement_duration")
-            if settle is None:
-                settle = active.get("settlement_duration") if isinstance(active, dict) else None
-            if settle is None:
-                settle = _lookup_settlement_duration(pk, svc_for_ts)
-            rate = ts.get("pay_as_you_go_rate") if isinstance(ts.get("pay_as_you_go_rate"), dict) else None
-            if rate is None:
-                rate = _extract_paygo_rate(active_raw) if isinstance(active_raw, dict) else None
-            qpm = ts.get("queries_per_minute")
-            if qpm is None and isinstance(active_raw, dict):
-                qpm = active_raw.get("queries_per_minute")
-            min_dur = ts.get("min_contract_duration")
-            if min_dur is None and isinstance(active_raw, dict):
-                min_dur = active_raw.get("min_contract_duration")
-            max_dur = ts.get("max_contract_duration")
-            if max_dur is None and isinstance(active_raw, dict):
-                max_dur = active_raw.get("max_contract_duration")
-            moniker = ts.get("provider_moniker") or _active_provider_moniker(pk)
+            settle = (
+                (active.get("settlement_duration") if isinstance(active, dict) else None)
+                or (active_raw.get("settlement_duration") if isinstance(active_raw, dict) else None)
+                or _lookup_settlement_duration(pk, svc_for_ts)
+            )
+            rate = _extract_paygo_rate(active_raw) if isinstance(active_raw, dict) else None
+            qpm = active_raw.get("queries_per_minute") if isinstance(active_raw, dict) else None
+            min_dur = active_raw.get("min_contract_duration") if isinstance(active_raw, dict) else None
+            max_dur = active_raw.get("max_contract_duration") if isinstance(active_raw, dict) else None
+            moniker = _active_provider_moniker(pk)
+            if not moniker and pk in prov_meta_cache:
+                meta = prov_meta_cache[pk].get("metadata") or {}
+                moniker = (meta.get("config") or {}).get("moniker") or meta.get("moniker")
             candidates.append(
                 {
                     "provider_pubkey": pk,
@@ -1989,7 +2127,20 @@ def _resolve_listener_target(listener: dict) -> tuple[str | None, str | None, st
     """Return (provider_pubkey, sentinel_url, provider_moniker)."""
     if not isinstance(listener, dict):
         return None, None, None
-    # Prefer stored values if present
+    # Prefer top_services ordering first
+    top = listener.get("top_services") or []
+    for ts in top if isinstance(top, list) else []:
+        if not isinstance(ts, dict):
+            continue
+        pk = ts.get("provider_pubkey") or listener.get("provider_pubkey")
+        sent = ts.get("sentinel_url")
+        mon = ts.get("provider_moniker") or listener.get("provider_moniker")
+        meta_uri = ts.get("metadata_uri")
+        if not sent and _is_external(meta_uri):
+            sent = _sentinel_from_metadata_uri(meta_uri)
+        if pk and sent:
+            return pk, sent, mon
+    # Fall back to stored values
     pk = listener.get("provider_pubkey")
     sent = listener.get("sentinel_url")
     mon = listener.get("provider_moniker")
@@ -2009,20 +2160,6 @@ def _resolve_listener_target(listener: dict) -> tuple[str | None, str | None, st
                 return pk, sent, mon
     except Exception:
         pass
-    top = listener.get("top_services") or []
-    if isinstance(top, list):
-        for ts in top:
-            if not isinstance(ts, dict):
-                continue
-            ts_sent = ts.get("sentinel_url")
-            if ts_sent:
-                return ts.get("provider_pubkey") or pk, ts_sent, ts.get("provider_moniker") or mon
-            meta_uri = ts.get("metadata_uri")
-            if not _is_external(meta_uri):
-                continue
-            sentinel_url = _sentinel_from_metadata_uri(meta_uri)
-            if sentinel_url:
-                return ts.get("provider_pubkey") or pk, sentinel_url, ts.get("provider_moniker") or mon
     return pk, sent, mon
 
 
@@ -2781,6 +2918,15 @@ class PaygProxyHandler(BaseHTTPRequestHandler):
                     {"arkeo": meta, "error": "sign_failed", "detail": sig_err},
                     extra_headers=headers,
                 )
+            # persist last response info for UI/debug regardless of success
+            self.server.last_code = code
+            self.server.last_nonce = nonce
+            self.server.last_nonce_source = nonce_source
+            try:
+                self.server.last_nonce_cache = _peek_nonce_cache(cid, contract_client)
+                _persist_listener_nonce(cfg.get("listener_id"), cid, nonce)
+            except Exception:
+                self.server.last_nonce_cache = None
             success = code is not None and 200 <= int(code) < 300
 
             if success:
@@ -2836,14 +2982,6 @@ class PaygProxyHandler(BaseHTTPRequestHandler):
                     pass
 
             meta_full = _build_arkeo_meta_clean(active, nonce, svc_id, service, provider_filter, contract_client, sentinel, response_time_sec)
-            self.server.last_code = code
-            self.server.last_nonce = nonce
-            self.server.last_nonce_source = nonce_source
-            try:
-                self.server.last_nonce_cache = _peek_nonce_cache(cid, contract_client)
-                _persist_listener_nonce(cfg.get("listener_id"), cid, nonce)
-            except Exception:
-                self.server.last_nonce_cache = None
             # success → clear cooldown for this provider
             if provider_filter in cooldowns:
                 try:
@@ -2861,61 +2999,63 @@ class PaygProxyHandler(BaseHTTPRequestHandler):
                         _update_top_service_metrics(cfg.get("listener_id"), provider_filter, response_time_sec)
                 except Exception:
                     pass
-            try:
-                body_preview = ""
-                if isinstance(resp_body, (bytes, bytearray)):
-                    body_preview = resp_body.decode(errors="ignore")
-                else:
-                    body_preview = str(resp_body)
-                if len(body_preview) > 800:
-                    body_preview = body_preview[:800] + "...[truncated]"
-                self.server.last_upstream = {"code": code, "body": body_preview}
-            except Exception:
-                pass
-
-            self.server.active_contract = active
-            if hasattr(self.server, "active_contracts"):
-                self.server.active_contracts[provider_filter] = active
-            try:
-                contract_cache[provider_filter] = {"contract": active, "cached_at": time.time(), "height_cached": _safe_int(active.get("height"))}
-            except Exception:
-                pass
-            self._log("info", f"proxy done code={code} cid={cid} nonce={nonce} provider={provider_filter}")
-            decorate = str(cfg.get("decorate_response", PROXY_DECORATE_RESPONSE)).lower() in ("1", "true", "yes", "on")
-
-            try:
-                body_text = resp_body.decode() if isinstance(resp_body, (bytes, bytearray)) else str(resp_body)
-            except Exception:
-                body_text = ""
-
-            if decorate:
+            if success:
+                self.server.active_contract = active
+                if hasattr(self.server, "active_contracts"):
+                    self.server.active_contracts[provider_filter] = active
                 try:
-                    upstream = json.loads(body_text)
+                    contract_cache[provider_filter] = {"contract": active, "cached_at": time.time(), "height_cached": _safe_int(active.get("height"))}
                 except Exception:
-                    upstream = body_text
-                return self._send_json(code, {"arkeo": meta_full, "response": upstream})
+                    pass
+                self._log("info", f"proxy done code={code} cid={cid} nonce={nonce} provider={provider_filter}")
+                decorate = str(cfg.get("decorate_response", PROXY_DECORATE_RESPONSE)).lower() in ("1", "true", "yes", "on")
 
-            if isinstance(resp_body, (bytes, bytearray)):
-                out_bytes = resp_body
-            else:
-                out_bytes = str(resp_body).encode()
-            self.send_response(code)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(out_bytes)))
-            self.send_header("Connection", "close")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("X-Arkeo-Contract-Id", cid)
-            self.send_header("X-Arkeo-Nonce", str(nonce))
-            if meta_full.get("cost_request"):
-                self.send_header("X-Arkeo-Cost", meta_full.get("cost_request"))
-            self.end_headers()
+                try:
+                    body_text = resp_body.decode() if isinstance(resp_body, (bytes, bytearray)) else str(resp_body)
+                except Exception:
+                    body_text = ""
+
+                if decorate:
+                    try:
+                        upstream = json.loads(body_text)
+                    except Exception:
+                        upstream = body_text
+                    return self._send_json(code, {"arkeo": meta_full, "response": upstream})
+
+                if isinstance(resp_body, (bytes, bytearray)):
+                    out_bytes = resp_body
+                else:
+                    out_bytes = str(resp_body).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(out_bytes)))
+                self.send_header("Connection", "close")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("X-Arkeo-Contract-Id", cid)
+                self.send_header("X-Arkeo-Nonce", str(nonce))
+                if meta_full.get("cost_request"):
+                    self.send_header("X-Arkeo-Cost", meta_full.get("cost_request"))
+                self.end_headers()
+                try:
+                    self.wfile.write(out_bytes)
+                    self.wfile.flush()
+                except Exception:
+                    pass
+                self.close_connection = True
+                return
+
+            # non-success upstream: mark down and try next candidate
             try:
-                self.wfile.write(out_bytes)
-                self.wfile.flush()
+                _set_top_service_status(cfg.get("listener_id"), provider_filter, "Down")
             except Exception:
                 pass
-            self.close_connection = True
-            return
+            last_err = f"upstream_status_{code}"
+            last_meta = _build_arkeo_meta_clean(active, nonce, svc_id, service, provider_filter, contract_client, sentinel, 0)
+            self._log("warning", f"upstream non-2xx code={code} provider={provider_filter} sentinel={sentinel}; trying next candidate")
+            # optionally set short cooldown to avoid hammering a bad upstream
+            if PROXY_OPEN_COOLDOWN > 0:
+                cooldowns[provider_filter] = time.time() + PROXY_OPEN_COOLDOWN
+            continue
 
         # all candidates failed
         meta = last_meta or _build_arkeo_meta_clean(None, None, svc_id, service, "", client_pub, sentinel, 0)
@@ -3196,6 +3336,29 @@ def _top_active_services_by_payg(service_id: str, limit: int = 3) -> list[dict]:
 
     candidates.sort(key=_sort_key)
     return candidates[:limit]
+
+
+def _providers_for_service(service_id: str) -> list[dict]:
+    """Return all active providers for a service_id with sentinel + moniker hints."""
+    sid = str(service_id) if service_id is not None else ""
+    if not sid:
+        return []
+    providers: list[dict] = []
+    raw = _top_active_services_by_payg(sid, limit=1000)
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        item = dict(entry)
+        item["service_id"] = sid
+        mu = item.get("metadata_uri") or (item.get("raw") or {}).get("metadata_uri")
+        if mu and _is_external(mu) and not item.get("sentinel_url"):
+            sent = _sentinel_from_metadata_uri(mu)
+            if sent:
+                item["sentinel_url"] = sent
+        if not item.get("provider_moniker"):
+            item["provider_moniker"] = _active_provider_moniker(item.get("provider_pubkey") or "")
+        providers.append(item)
+    return providers
 
 
 def _write_json_atomic(path: str, payload: dict) -> None:
@@ -3535,7 +3698,7 @@ def get_listeners():
     used_ports = _collect_used_ports(listeners)
     next_port = _next_available_port(used_ports)
     return jsonify({
-        "listeners": listeners,
+        "listeners": [_enrich_listener_for_response(l) for l in listeners],
         "port_range": [LISTENER_PORT_START, LISTENER_PORT_END],
         "next_port": next_port,
     })
@@ -3562,46 +3725,28 @@ def create_listener():
     if port is None:
         return jsonify({"error": "no ports available in configured range"}), 400
     now = _timestamp()
-    svc_lookup = _load_active_service_types_lookup()
-    svc_meta = svc_lookup.get(clean.get("service_id") or "", {})
     best = _normalize_top_services(_top_active_services_by_payg(clean.get("service_id") or "", limit=5))
-    provider_pk = (clean.get("provider_pubkey") or "").strip() or None
-    provider_mon = None
-    sentinel_url = (clean.get("sentinel_url") or "").strip() or None
-    if best and not provider_pk:
-        provider_pk = best[0].get("provider_pubkey")
-        provider_mon = best[0].get("provider_moniker")
-        mu = best[0].get("metadata_uri")
-        if _is_external(mu):
-            sentinel_url = _sentinel_from_metadata_uri(mu)
-    best = _normalize_top_services(best)
-    if not sentinel_url:
-        sentinel_url = SENTINEL_URI_DEFAULT
-    new_entry = {
+    # primary provider comes from top_services ordering
+    raw_entry = {
         "id": payload.get("id") or str(int(time.time() * 1000)),
         "target": "",
         "status": clean["status"],
         "port": port,
         "service_id": clean.get("service_id") or "",
-        "service_name": svc_meta.get("service_name", ""),
-        "service_description": svc_meta.get("service_description", ""),
-        "provider_pubkey": provider_pk,
-        "provider_moniker": provider_mon,
-        "sentinel_url": sentinel_url,
         "top_services": best,
         "whitelist_ips": clean.get("whitelist_ips") or "",
         "created_at": now,
         "updated_at": now,
     }
-    ok, err = _ensure_listener_runtime(new_entry, previous_port=None, previous_status=None, previous_entry=None)
+    ok, err = _ensure_listener_runtime(raw_entry, previous_port=None, previous_status=None, previous_entry=None)
     if not ok:
         return jsonify({"error": err or "failed to start listener"}), 500
-    listeners.append(new_entry)
+    listeners.append(raw_entry)
     listeners.sort(key=lambda x: x.get("port") if isinstance(x, dict) else 0)
     data["listeners"] = listeners
     data["fetched_at"] = now
     _write_listeners(data)
-    return jsonify({"listener": new_entry, "next_port": _next_available_port(used_ports | {port})})
+    return jsonify({"listener": _enrich_listener_for_response(raw_entry), "next_port": _next_available_port(used_ports | {port})})
 
 
 @app.put("/api/listeners/<listener_id>")
@@ -3625,22 +3770,10 @@ def update_listener(listener_id: str):
     }
     if clean.get("service_id") and str(clean["service_id"]) in existing_service_ids:
         return jsonify({"error": "service_already_used"}), 400
-    svc_lookup = _load_active_service_types_lookup()
-    svc_meta = svc_lookup.get(clean.get("service_id") or "", {})
     best = _top_active_services_by_payg(clean.get("service_id") or "", limit=5)
     updated = None
     old_snapshot = None
     provider_pk = (clean.get("provider_pubkey") or "").strip() or None
-    provider_mon = None
-    sentinel_url = (clean.get("sentinel_url") or "").strip() or None
-    if best and not provider_pk:
-        provider_pk = best[0].get("provider_pubkey")
-        provider_mon = best[0].get("provider_moniker")
-        mu = best[0].get("metadata_uri")
-        if _is_external(mu):
-            sentinel_url = _sentinel_from_metadata_uri(mu)
-    if not sentinel_url:
-        sentinel_url = SENTINEL_URI_DEFAULT
     for l in listeners:
         if not isinstance(l, dict):
             continue
@@ -3652,30 +3785,23 @@ def update_listener(listener_id: str):
         l["target"] = ""
         l["status"] = clean["status"]
         l["service_id"] = clean.get("service_id") or ""
-        l["service_name"] = svc_meta.get("service_name", "")
-        l["service_description"] = svc_meta.get("service_description", "")
         # top services ordering: use custom if provided, else keep existing unless service changed or empty
         existing_top = l.get("top_services") if isinstance(l.get("top_services"), list) else []
-        new_top = custom_top if custom_top is not None else existing_top
-        if (str(l.get("service_id")) != str(clean.get("service_id") or "")) or not new_top:
-            new_top = best
+        if custom_top is not None:
+            new_top = custom_top  # honor explicit (even empty) input
+        else:
+            new_top = existing_top
+            if str(l.get("service_id")) != str(clean.get("service_id") or "") or not new_top:
+                new_top = best
         l["top_services"] = _normalize_top_services(new_top)
         # derive provider/sentinel from top services primary (new order wins)
         if l["top_services"]:
             primary = l["top_services"][0]
             if isinstance(primary, dict):
                 provider_pk = primary.get("provider_pubkey") or provider_pk
-                provider_mon = primary.get("provider_moniker") or provider_mon
-                mu = primary.get("metadata_uri")
-                if not provider_mon:
-                    provider_mon = primary.get("provider_moniker")
-                if primary.get("sentinel_url"):
-                    sentinel_url = primary.get("sentinel_url")
-                elif _is_external(mu):
-                    sentinel_url = _sentinel_from_metadata_uri(mu)
-        l["provider_pubkey"] = provider_pk or l.get("provider_pubkey")
-        l["provider_moniker"] = provider_mon or l.get("provider_moniker")
-        l["sentinel_url"] = sentinel_url or l.get("sentinel_url")
+        # do not persist provider_pubkey; runtime derives from top_services
+        if "provider_pubkey" in l:
+            l.pop("provider_pubkey", None)
         l["whitelist_ips"] = clean.get("whitelist_ips") if clean.get("whitelist_ips") is not None else l.get("whitelist_ips", "")
         l["updated_at"] = _timestamp()
         updated = l
@@ -3701,7 +3827,7 @@ def update_listener(listener_id: str):
     data["listeners"] = listeners
     _write_listeners(data)
     used_ports = existing_ports | ({updated["port"]} if isinstance(updated.get("port"), int) else set())
-    return jsonify({"listener": updated, "next_port": _next_available_port(used_ports)})
+    return jsonify({"listener": _enrich_listener_for_response(updated), "next_port": _next_available_port(used_ports)})
 
 
 @app.delete("/api/listeners/<listener_id>")
@@ -3767,7 +3893,17 @@ def refresh_listener_top_services(listener_id: str):
     listeners.sort(key=lambda x: x.get("port") if isinstance(x, dict) else 0)
     data["listeners"] = listeners
     _write_listeners(data)
-    return jsonify({"listener": found})
+    return jsonify({"listener": _enrich_listener_for_response(found)})
+
+
+@app.get("/api/services/<service_id>/providers")
+def providers_for_service(service_id: str):
+    """Return active providers for a given service id (from cache)."""
+    try:
+        providers = _providers_for_service(service_id)
+    except Exception as e:
+        return jsonify({"error": "failed_to_load_providers", "detail": str(e)}), 500
+    return jsonify({"providers": providers, "count": len(providers)})
 
 
 @app.get("/api/listeners/<listener_id>/test")
