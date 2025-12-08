@@ -1,0 +1,23 @@
+:root {
+  --bg-main: #0F121A;
+  --surface: #161A23;
+  --border: #1E222C;
+  --primary-1: #FF2BCB;
+  --primary-2: #FF4FD2;
+  --primary-3: #FF8A2B;
+  --secondary-bg: #3E4656;
+  --secondary-text: #A9AFC0;
+}
+* { box-sizing: border-box; }
+body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: var(--bg-main); color: #e5e7eb; }
+.line-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.card-surface { background: var(--surface); border: 1px solid var(--border); }
+.primary-gradient { background: linear-gradient(90deg, var(--primary-1) 0%, var(--primary-2) 50%, var(--primary-3) 100%); }
+.primary-gradient:hover { filter: brightness(1.05); }
+.primary-shadow { box-shadow: 0 10px 30px rgba(255, 79, 210, 0.25); }
+.secondary-btn { background: var(--secondary-bg); color: var(--secondary-text); }
+.text-arkeo { --tw-text-opacity: 1; color: rgb(59 224 255 / var(--tw-text-opacity, 1)); }
+.text-secondaryText { color: var(--secondary-text); }
+.placeholder-secondaryText::placeholder { color: var(--secondary-text); }
+.transition-all { transition-property: all; transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1); transition-duration: 150ms; }
+.backdrop-blur { --tw-backdrop-blur: blur(8px); -webkit-backdrop-filter: var(--tw-backdrop-blur) var(--tw-backdrop-brightness) var(--tw-backdrop-contrast) var(--tw-backdrop-grayscale) var(--tw-backdrop-hue-rotate) var(--tw-backdrop-invert) var(--tw-backdrop-opacity) var(--tw-backdrop-saturate) var(--tw-backdrop-sepia); backdrop-filter: var(--tw-backdrop-blur) var(--tw-backdrop-brightness) var(--tw-backdrop-contrast) var(--tw-backdrop-grayscale) var(--tw-backdrop-hue-rotate) var(--tw-backdrop-invert) var(--tw-backdrop-opacity) var(--tw-backdrop-saturate) var(--tw-backdrop-sepia); }
