@@ -24,10 +24,12 @@ RPC_URL_DEFAULT=${SENTINEL_RPC_URL:-$ARKEOD_NODE}
 # If rpc url is tcp:// convert to http:// for sentinel
 RPC_URL_DEFAULT=${RPC_URL_DEFAULT/tcp:\/\//http:\/\/}
 ADMIN_PORT=${ADMIN_PORT:-8080}
-# If provided, prefer ARKEO_REST_API_PORT as the provider hub URI default
-PROVIDER_HUB_URI=${PROVIDER_HUB_URI:-${ARKEO_REST_API_PORT:-}}
+REST_API_DEFAULT=${ARKEO_REST_API:-${EXTERNAL_ARKEO_REST_API:-${ARKEO_REST_API_PORT:-}}}
+ARKEO_REST_API=${REST_API_DEFAULT}
+# If provided, prefer ARKEO_REST_API as the provider hub URI default
+PROVIDER_HUB_URI=${PROVIDER_HUB_URI:-${ARKEO_REST_API:-}}
 CACHE_DIR=${CACHE_DIR:-/app/cache}
-CACHE_FETCH_INTERVAL=${CACHE_FETCH_INTERVAL:-300}
+CACHE_FETCH_INTERVAL=${CACHE_FETCH_INTERVAL:-150}
 # Default off to avoid any startup hangs; rely on background fetcher or manual refresh.
 CACHE_WARM_ON_START=${CACHE_WARM_ON_START:-0}
 

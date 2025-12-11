@@ -403,6 +403,15 @@ window.fetch = (url, options = {}) =>
         return;
     }
 
+    function normalizeSentinelUri(uri) {
+        if (!uri) return "";
+        let cleaned = String(uri).trim();
+        // If it already ends with /metadata.json (case-insensitive), keep it.
+        if (/\/metadata\.json$/i.test(cleaned)) return cleaned;
+        cleaned = cleaned.replace(/\/+$/, "");
+        return `${cleaned}/metadata.json`;
+    }
+
     function pullPendingEdit() {
         try {
             const raw = localStorage.getItem("providerServiceEdit");
@@ -519,10 +528,14 @@ window.fetch = (url, options = {}) =>
             submitBtn.textContent = "Submit Bond + Mod";
             return;
         }
+        const rawSentinelUri = document.getElementById("sentinelUri").value.trim();
+        const sentinelUriNormalized = normalizeSentinelUri(rawSentinelUri);
+        const sInput = document.getElementById("sentinelUri");
+        if (sInput) sInput.value = sentinelUriNormalized;
         const payload = {
             service: document.getElementById("bondService").value.trim(),
             bond: bondAmount,
-            sentinel_uri: document.getElementById("sentinelUri").value.trim(),
+            sentinel_uri: sentinelUriNormalized,
             metadata_nonce: metadataNonce,
             status: document.getElementById("status").value.trim(),
             min_contract_dur: document.getElementById("minContractDur").value.trim(),
@@ -731,20 +744,22 @@ window.fetch = (url, options = {}) =>
                 document.getElementById("metadataNonceHidden").value = data.metadata_nonce;
                 document.getElementById("metadataNonceLabel").textContent = data.metadata_nonce;
             }
-            // Always populate Sentinel URI from provider settings (SENTINEL_NODE:SENTINEL_PORT)
+            // Always populate Sentinel URI from provider settings (SENTINEL_NODE:SENTINEL_PORT) and normalize
             const baseNode = (settings.SENTINEL_NODE || "").replace(/\/+$/, "");
             const port = settings.SENTINEL_PORT || "";
             let sentinelFromSettings = baseNode;
             if (sentinelFromSettings && port) {
                 sentinelFromSettings = `${sentinelFromSettings}:${port}`;
             }
-            if (sentinelFromSettings) {
+            const normalizedFromSettings = normalizeSentinelUri(sentinelFromSettings);
+            if (normalizedFromSettings) {
                 const sInput = document.getElementById("sentinelUri");
-                if (sInput) sInput.value = sentinelFromSettings;
-                setAdminHost(sentinelFromSettings);
+                if (sInput) sInput.value = normalizedFromSettings;
+                setAdminHost(normalizedFromSettings);
             } else if (data.sentinel_uri) {
-                document.getElementById("sentinelUri").value = data.sentinel_uri;
-                setAdminHost(data.sentinel_uri);
+                const normalized = normalizeSentinelUri(data.sentinel_uri);
+                document.getElementById("sentinelUri").value = normalized;
+                setAdminHost(normalized);
             }
         // Prefill location from export/env if available
         const envMeta = (data.provider_metadata) || {};
@@ -856,7 +871,7 @@ window.fetch = (url, options = {}) =>
             const currentBond = document.getElementById("currentBondAmountLabel");
             if (currentBond) currentBond.textContent = formatBondDisplay(svc.bond);
         }
-        if (svc.metadata_uri) document.getElementById("sentinelUri").value = svc.metadata_uri;
+        if (svc.metadata_uri) document.getElementById("sentinelUri").value = normalizeSentinelUri(svc.metadata_uri);
         if (svc.metadata_nonce) {
             document.getElementById("metadataNonceHidden").value = svc.metadata_nonce;
             document.getElementById("metadataNonceLabel").textContent = svc.metadata_nonce;
@@ -893,7 +908,7 @@ window.fetch = (url, options = {}) =>
                 el.value = val;
             }
         };
-        if (cf.sentinel_uri) setVal("sentinelUri", cf.sentinel_uri);
+        if (cf.sentinel_uri) setVal("sentinelUri", normalizeSentinelUri(cf.sentinel_uri));
         if (cf.status) setVal("status", cf.status);
         if (cf.min_contract_dur) setVal("minContractDur", cf.min_contract_dur);
         if (cf.max_contract_dur) setVal("maxContractDur", cf.max_contract_dur);

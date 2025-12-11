@@ -81,10 +81,10 @@ a { color: var(--blue-accent); }
 .header-left h1 { }
 .header-left .muted { margin-top: 4px; }
 .header-desc { margin-top: -6px; }
-.header-right { text-align: right; display: flex; flex-direction: column; align-items: flex-end; margin-top: 48px; }
-.header-right-with-actions { margin-top: 0; gap: 8px; align-items: flex-start; align-self: flex-start; }
+.header-right { text-align: right; flex-direction: column; align-items: flex-end; margin-top: 48px; }
+.header-right-with-actions { margin-top: 0; gap: 12px; align-items: flex-start; align-self: flex-start; }
 .header-actions { display: flex; gap: 8px; align-items: center; justify-content: flex-end; width: 100%; }
-.header-line { min-height: 20px; }
+.header-line { min-height: 26px; }
 .fixed-pill { min-height: 24px; }
 .header-brand-row {
     display: inline-flex;

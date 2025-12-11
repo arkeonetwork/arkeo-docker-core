@@ -44,7 +44,12 @@
                 </span>
             </div>
             <div class="header-line" id="headerBalance"><strong>Provider Balance:</strong></div>
-            <div class="header-line muted" id="headerBlock"><strong>Current Block:</strong></div>
+            <div class="header-line muted" id="headerBlock">
+                <strong>Current Block:</strong>
+                <div class="header-line fixed-pill" style="justify-content: flex-end;">
+                    <span id="syncPill" class="status-badge status-warn hidden">Syncing...</span>
+                </div>
+            </div>
         </div>
     </div>
 </div>
@@ -911,7 +916,7 @@ let earningsChartCache = {};
             body.from_height = from;
             body.to_height = to;
         }
-        if (statusEl) statusEl.textContent = "Loading earnings...";
+        if (statusEl) statusEl.textContent = "";
         try {
             const res = await fetch(resolveApi("/api/provider-totals"), {
                 method: "POST",
@@ -928,7 +933,7 @@ let earningsChartCache = {};
             if ((!services || !services.length) && providerServiceTotals && providerServiceTotals.length) {
                 services = providerServiceTotals;
                 if (statusEl && !(data && data.error)) {
-                    statusEl.textContent = "Showing current claim totals (no settled earnings yet).";
+                    statusEl.textContent = "";
                 }
             } else if (data && data.error && statusEl) {
                 statusEl.textContent = data.error;
@@ -1056,6 +1061,14 @@ let earningsChartCache = {};
         }
     }
 
+    function showSyncingPill() {
+        setSyncPill(true, "Syncing...");
+    }
+
+    function hideSyncingPill() {
+        setSyncPill(false);
+    }
+
     function setStatusDot(statusId, state) {
         const badge = document.getElementById(statusId);
         if (!badge) return;
@@ -1063,6 +1076,13 @@ let earningsChartCache = {};
         if (state === "ok") cls = "ok";
         else if (state === "warn") cls = "warn";
         badge.className = `status-dot ${cls}`;
+    }
+
+    function setSyncPill(show, text = "Syncing...") {
+        const pill = document.getElementById("syncPill");
+        if (!pill) return;
+        pill.textContent = text;
+        pill.classList.toggle("hidden", !show);
     }
 
     async function fetchAdminPasswordStatus(showGate = true) {
@@ -1281,6 +1301,22 @@ let earningsChartCache = {};
         if (modal) modal.style.display = "none";
     }
 
+    async function ensureProviderSettingsExists() {
+        try {
+            const res = await fetch(resolveApi("/api/provider-settings"), { cache: "no-store" });
+            const data = await res.json();
+            if (res.ok && data && data.settings_exists === false) {
+                // Flag for admin page to show setup modal, then redirect
+                sessionStorage.setItem("requireProviderSetup", "1");
+                window.location.href = "admin.html";
+                return false;
+            }
+        } catch (e) {
+            // If this check fails, let the page continue; other calls will surface issues.
+        }
+        return true;
+    }
+
     async function renderEndpointPanel(sCfg, provObj, envMeta) {
         const el = document.getElementById("endpointList");
         if (!el) return;
@@ -1406,10 +1442,13 @@ let earningsChartCache = {};
         }
     }
 
-    window.addEventListener('load', () => {
+    window.addEventListener('load', async () => {
+        const ok = await ensureProviderSettingsExists();
+        if (!ok) return;
         fetchAdminPasswordStatus(true);
         getVersion();
-        refreshInfo();
+        showSyncingPill();
+        refreshInfo().finally(() => hideSyncingPill());
         refreshServices();
         refreshContractTotals();
         refreshVitals();

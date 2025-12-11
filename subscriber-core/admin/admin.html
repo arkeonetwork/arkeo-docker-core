@@ -2,7 +2,7 @@
 <html>
 <head>
     <meta charset="utf-8">
-    <title>Arkeo Data Marketplace | Admin Area</title>
+    <title>Arkeo Data Marketplace | Subscriber Admin</title>
     <link rel="stylesheet" href="style.css">
     <link rel="icon" href="images/favicon.ico">
     <link rel="shortcut icon" href="images/favicon.ico">
@@ -17,11 +17,11 @@
                 <div class="header-brand">
                     <span class="brand-main">Arkeo Data Marketplace</span>
                     <span class="brand-sep">|</span>
-                    <span class="brand-sub">Provider Manager</span>
+                    <span class="brand-sub">Subscriber Manager</span>
                 </div>
             </div>
             <h1>Admin Area</h1>
-            <div class="muted">Quick links, health checks, and an overview of the admin UI.</div>
+            <div class="muted">Quick links, health checks, and subscriber settings.</div>
         </div>
         <div class="header-right header-right-with-actions">
             <div class="header-actions">
@@ -58,11 +58,11 @@
                 <div id="blockHeightDisplay" class="muted mt-6">(loading...)</div>
             </div>
             <div>
-                <strong>Provider Balance</strong>
+                <strong>Subscriber Balance</strong>
                 <div id="balanceDisplay" class="muted mt-6">(loading...)</div>
             </div>
             <div>
-                <strong>Provider Pubkey</strong>
+                <strong>Subscriber Pubkey</strong>
                 <div id="overviewPubkeyDisplay" class="muted mt-6">(loading...)</div>
             </div>
         </div>
@@ -72,54 +72,69 @@
 <div class="card">
     <div class="row-between align-center">
         <div class="inline">
-            <h2 class="mt-0 mb-0">Provider Settings</h2>
-            <div class="hint">Values formerly stored in provider.env. Update and save here.</div>
+            <h2 class="mt-0 mb-0">Subscriber Settings</h2>
+            <div class="hint">Values formerly stored in subscriber.env. Update and save here.</div>
         </div>
         <div class="actions">
-            <button class="primary" type="submit" form="providerSettingsForm">Save Settings</button>
+            <button class="primary" type="submit" form="subscriberSettingsForm">Save Settings</button>
         </div>
     </div>
-    <form id="providerSettingsForm" onsubmit="saveProviderSettings(event)">
+    <form id="subscriberSettingsForm" onsubmit="saveSubscriberSettings(event)">
     <table>
         <tr>
+            <td class="label">Subscriber Name</td>
+            <td class="value"><input type="text" id="subscriberName" placeholder="Arkeo Core Subscriber" autocomplete="on" /></td>
+        </tr>
+        <tr class="hidden">
             <td class="label">Key Name</td>
             <td class="value"><input type="text" id="keyName" readonly /></td>
         </tr>
-        <tr>
+        <tr class="hidden">
             <td class="label">Keyring Backend <span class="muted" id="keyBackendLabel">(default)</span></td>
             <td class="value"><div id="keyBackendValue" class="muted">(read-only)</div></td>
         </tr>
         <tr>
             <td class="label">Chain ID</td>
-            <td class="value"><input type="text" id="chainId" /></td>
+            <td class="value"><input type="text" id="chainId" placeholder="arkeo-main-v1" /></td>
         </tr>
-        <tr>
+        <tr class="hidden">
             <td class="label">Arkeod Home <span class="muted" id="arkeodHomeLabel"></span></td>
             <td class="value"><div id="arkeodHomeValue" class="muted">(read-only)</div></td>
         </tr>
         <tr>
             <td class="label">Arkeod Node (RPC)</td>
-            <td class="value"><input type="text" id="arkeodNode" placeholder="tcp://provider1.innovationtheory.com:26657" /></td>
+            <td class="value"><input type="text" id="arkeodNode" placeholder="tcp://127.0.0.1:26657" /></td>
         </tr>
         <tr>
             <td class="label">Arkeo REST API</td>
-            <td class="value"><input type="text" id="arkeodRest" placeholder="http://host:1317" /></td>
-        </tr>
-        <tr>
-            <td class="label">Sentinel Node</td>
-            <td class="value"><input type="text" id="sentinelNode" placeholder="http://host" /></td>
-        </tr>
-        <tr>
-            <td class="label">Sentinel Port</td>
-            <td class="value"><input type="text" id="sentinelPort" placeholder="3636" /></td>
+            <td class="value"><input type="text" id="arkeodRest" placeholder="http://127.0.0.1:1317" /></td>
         </tr>
         <tr>
             <td class="label">Admin UI Port</td>
-            <td class="value"><input type="text" id="adminPort" placeholder="8080" autocomplete="on" /></td>
+            <td class="value"><input type="text" id="adminPort" placeholder="8079" autocomplete="on" /></td>
         </tr>
         <tr>
             <td class="label">Admin API Port</td>
-            <td class="value"><input type="text" id="adminApiPort" placeholder="9999" autocomplete="on" /></td>
+            <td class="value"><input type="text" id="adminApiPort" placeholder="9998" autocomplete="on" /></td>
+        </tr>
+        <tr>
+            <td class="label">
+                Cache Fetch Interval (seconds)
+                <div class="hint">Background sync cadence. Set to 0 to disable background sync.</div>
+            </td>
+            <td class="value"><input type="number" id="cacheFetchInterval" placeholder="150" min="0" step="1" /></td>
+        </tr>
+        <tr>
+            <td class="label">
+                Allow Localhost Sentinel URIs
+                <div class="hint">Permit active providers whose metadata points at localhost/127.* sentinel URIs.</div>
+            </td>
+            <td class="value">
+                <label class="inline">
+                    <input type="checkbox" id="allowLocalhostSentinel" />
+                    <span>Allow localhost sentinel URIs</span>
+                </label>
+            </td>
         </tr>
         <tr>
             <td class="label">
@@ -128,19 +143,12 @@
             </td>
             <td class="value"><textarea id="hotwalletMnemonic" rows="3"></textarea></td>
         </tr>
-        <tr>
-            <td class="label">
-                Admin Password
-                <div class="hint">Leave blank to disable. When set, a password prompt is required on this page.</div>
-            </td>
-            <td class="value"><input type="password" id="adminPasswordInput" class="full" autocomplete="new-password" placeholder="(optional)" /></td>
-        </tr>
-        <tr>
+        <tr class="hidden">
             <td class="label">Derived Pubkey</td>
-            <td class="value"><div id="providerPubkeyDisplay" class="muted">(loading...)</div></td>
+            <td class="value"><div id="subscriberPubkeyDisplay" class="muted">(loading...)</div></td>
         </tr>
     </table>
-    <div id="providerSettingsResult" class="muted" aria-live="polite"></div>
+    <div id="subscriberSettingsResult" class="muted" aria-live="polite"></div>
     </form>
 </div>
 
@@ -151,7 +159,7 @@
             <span class="footer-title">
                 <span class="brand-main">Arkeo Marketplace</span>
                 <span class="brand-sep">|</span>
-                <span class="brand-sub">Provider Manager</span>
+                <span class="brand-sub">Subscriber Manager</span>
             </span>
         </div>
         <div class="footer-links-right">
@@ -161,63 +169,12 @@
     </div>
 </div>
 
-<div id="adminPasswordGate" class="overlay overlay-strong hidden">
-    <div class="overlay-card password-card">
-        <div class="password-title">
-            <span>Arkeo Data Marketplace</span>
-            <span class="sep">|</span>
-            <span class="sub">Provider Manager</span>
-        </div>
-        <form onsubmit="submitAdminPasswordGate(); return false;">
-            <div class="password-body">
-                <h3 class="mt-6 mb-0">Password Required</h3>
-                <p class="muted">Enter the admin password to continue.</p>
-                <input type="text" name="admin-username-filler" autocomplete="username" value="admin" class="hidden" aria-hidden="true" tabindex="-1" />
-                <input type="password" id="adminPasswordGateInput" autocomplete="current-password" placeholder="Admin password" />
-            </div>
-            <div class="actions center mt-6">
-                <button class="primary" type="submit">Unlock</button>
-            </div>
-            <div id="adminPasswordGateStatus" class="muted mt-6"></div>
-        </form>
-    </div>
-</div>
-
-<!-- Setup-required modal -->
-<div id="setupRequiredModal" class="overlay overlay-strong hidden">
-    <div class="overlay-card password-card">
-        <div class="password-title" style="justify-content: flex-start; text-align: left; width: 100%;">Setup Required</div>
-        <div class="password-body" style="text-align: left;">
-            <p class="muted">Provider settings file not found. Please complete the admin setup to continue.</p>
-        </div>
-        <div class="actions mt-8" style="justify-content: flex-start; text-align: left;">
-            <button class="primary" style="margin-top: 6px;" onclick="closeSetupModal()">OK</button>
-        </div>
-    </div>
-</div>
-
 <script>
-    const DEFAULT_ADMIN_API_PORT = "9999";
-    const DEFAULT_ADMIN_UI_PORT = "8080";
+    const DEFAULT_ADMIN_API_PORT = "9998";
+    const DEFAULT_ADMIN_UI_PORT = "8079";
     let adminHost = (window.location && window.location.hostname) || "localhost";
     let adminApiBase = buildBaseUrl(adminHost, DEFAULT_ADMIN_API_PORT);
-    let providerSettingsCache = {};
-    let adminPasswordEnabled = false;
-    let adminSessionAuthed = false;
-    function requirePasswordGate() {
-        sessionStorage.removeItem("adminAuthed");
-        adminSessionAuthed = false;
-        const gate = document.getElementById("adminPasswordGate");
-        if (gate) gate.classList.remove("hidden");
-    }
-    const realFetch = window.fetch.bind(window);
-    window.fetch = (url, options = {}) =>
-        realFetch(url, { credentials: "include", ...options }).then((resp) => {
-            if (resp && resp.status === 401) {
-                requirePasswordGate();
-            }
-            return resp;
-        });
+    let subscriberSettingsCache = {};
 
     function buildBaseUrl(host, port) {
         const proto = (window.location && window.location.protocol === "https:") ? "https:" : "http:";
@@ -271,57 +228,6 @@
         return;
     }
 
-    async function fetchAdminPasswordStatus(showGate = true) {
-        try {
-            const res = await fetch(resolveApi("/api/session"), { cache: "no-store" });
-            const data = await res.json();
-            adminPasswordEnabled = !!(data && data.enabled);
-            adminSessionAuthed = !!(data && data.authed);
-        } catch (e) {
-            adminPasswordEnabled = false;
-            adminSessionAuthed = false;
-        }
-        if (adminPasswordEnabled && !adminSessionAuthed) {
-            sessionStorage.removeItem("adminAuthed");
-        }
-        const gate = document.getElementById("adminPasswordGate");
-        const gateAuthed = sessionStorage.getItem("adminAuthed") === "1" || adminSessionAuthed;
-        if (gate) {
-            if (showGate && adminPasswordEnabled && !gateAuthed) {
-                gate.classList.remove("hidden");
-            } else {
-                gate.classList.add("hidden");
-            }
-        }
-    }
-
-    async function submitAdminPasswordGate() {
-        const input = document.getElementById("adminPasswordGateInput");
-        const statusEl = document.getElementById("adminPasswordGateStatus");
-        const pwd = (input && input.value) || "";
-        if (statusEl) statusEl.textContent = "Verifying...";
-        try {
-            const res = await fetch(resolveApi("/api/login"), {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ password: pwd }),
-            });
-            const data = await res.json();
-            if (data && data.ok) {
-                sessionStorage.setItem("adminAuthed", "1");
-                adminSessionAuthed = true;
-                const gate = document.getElementById("adminPasswordGate");
-                if (gate) gate.classList.add("hidden");
-                if (statusEl) statusEl.textContent = "";
-                window.location.href = "index.html";
-            } else {
-                if (statusEl) statusEl.textContent = "Incorrect password.";
-            }
-        } catch (e) {
-            if (statusEl) statusEl.textContent = `Failed to verify: ${e}`;
-        }
-    }
-
     async function loadAdminInfo() {
         setBadge("warn", "Refreshing…");
         const fetchNoStore = (url) => fetch(url, { cache: "no-store" });
@@ -338,16 +244,16 @@
             }
         };
         try {
-            const [verRes, heightRes, balRes, keyRes] = await Promise.allSettled([
+            const [verRes, heightRes, balRes, infoRes] = await Promise.allSettled([
                 fetchNoStore(resolveApi("/api/version")),
                 fetchNoStore(resolveApi("/api/block-height")),
                 fetchNoStore(resolveApi("/api/balance")),
-                fetchNoStore(resolveApi("/api/key")),
+                fetchNoStore(resolveApi("/api/subscriber-info")),
             ]);
             const version = await parseSafe(verRes);
             const height = await parseSafe(heightRes);
             const balance = await parseSafe(balRes);
-            const key = await parseSafe(keyRes);
+            const info = await parseSafe(infoRes);
 
             const apiVersionEl = document.getElementById("adminApiVersion");
             if (apiVersionEl) apiVersionEl.textContent = version && !version.error ? version.arkeod_version || "(unknown)" : "Unavailable";
@@ -365,7 +271,7 @@
             if (balEl) balEl.textContent = formatBalance(balance);
 
             const pubEl = document.getElementById("overviewPubkeyDisplay");
-            const bech32 = (key && key.pubkey && key.pubkey.bech32) || "";
+            const bech32 = (info && info.pubkey && info.pubkey.bech32) || "";
             if (pubEl) {
                 if (bech32) {
                     pubEl.textContent = formatPubkeyShort(bech32);
@@ -381,13 +287,33 @@
         }
     }
 
-    function setProviderInput(id, val) {
+    function setSubscriberInput(id, val) {
         const el = document.getElementById(id);
         if (el) el.value = val || "";
     }
 
+    const DEFAULTS = {
+        SUBSCRIBER_NAME: "Arkeo Core Subscriber",
+        KEY_NAME: "subscriber",
+        KEY_KEYRING_BACKEND: "test",
+        CHAIN_ID: "arkeo-main-v1",
+        ARKEOD_HOME: "/root/.arkeo",
+        ARKEOD_NODE: "tcp://127.0.0.1:26657",
+        ARKEO_REST_API: "http://127.0.0.1:1317",
+        ADMIN_PORT: "8079",
+        ADMIN_API_PORT: "9998",
+        CACHE_FETCH_INTERVAL: "150",
+    };
+
+    function setInputWithDefault(id, val, fallbackKey) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const finalVal = val || DEFAULTS[fallbackKey] || "";
+        el.value = finalVal;
+    }
+
     function setStatusMessage(text, isError = false) {
-        const resultEl = document.getElementById("providerSettingsResult");
+        const resultEl = document.getElementById("subscriberSettingsResult");
         if (!resultEl) return;
         resultEl.textContent = text || "";
         resultEl.classList.toggle("status-error", isError);
@@ -395,69 +321,59 @@
         resultEl.classList.toggle("error", isError);
     }
 
-    function showSetupRequiredModal() {
-        const modal = document.getElementById("setupRequiredModal");
-        if (modal) {
-            modal.classList.remove("hidden");
-            modal.style.display = "flex";
-        }
-    }
-    function closeSetupModal() {
-        const modal = document.getElementById("setupRequiredModal");
-        if (modal) {
-            modal.classList.add("hidden");
-            modal.style.display = "none";
-        }
-    }
-
-    async function loadProviderSettings(showStatus = true) {
-        const resultEl = document.getElementById("providerSettingsResult");
+    async function loadSubscriberSettings(showStatus = true) {
+        const resultEl = document.getElementById("subscriberSettingsResult");
         if (showStatus && resultEl) {
-            setStatusMessage("Loading provider settings...", false);
+            setStatusMessage("Loading subscriber settings...", false);
         }
         try {
-            const res = await fetch(resolveApi("/api/provider-settings"), { cache: "no-store" });
+            const res = await fetch(resolveApi("/api/subscriber-settings"), { cache: "no-store" });
             const data = await res.json();
             if (!res.ok) {
                 throw new Error(data && data.error ? data.error : res.statusText);
             }
-            providerSettingsCache = data.settings || {};
-            setProviderInput("keyName", providerSettingsCache.KEY_NAME);
+            subscriberSettingsCache = data.settings || {};
+            setInputWithDefault("subscriberName", subscriberSettingsCache.SUBSCRIBER_NAME, "SUBSCRIBER_NAME");
+            setInputWithDefault("keyName", subscriberSettingsCache.KEY_NAME, "KEY_NAME");
             const backendLabel = document.getElementById("keyBackendLabel");
             const backendVal = document.getElementById("keyBackendValue");
-            const backendText = providerSettingsCache.KEY_KEYRING_BACKEND || "(default)";
+            const backendText = subscriberSettingsCache.KEY_KEYRING_BACKEND || DEFAULTS.KEY_KEYRING_BACKEND;
             if (backendLabel) backendLabel.textContent = backendText;
             if (backendVal) backendVal.textContent = backendText;
-            setProviderInput("chainId", providerSettingsCache.CHAIN_ID);
+            setInputWithDefault("chainId", subscriberSettingsCache.CHAIN_ID, "CHAIN_ID");
             const homeLabel = document.getElementById("arkeodHomeLabel");
             const homeVal = document.getElementById("arkeodHomeValue");
-            const homeText = providerSettingsCache.ARKEOD_HOME || "";
+            const homeText = subscriberSettingsCache.ARKEOD_HOME || DEFAULTS.ARKEOD_HOME;
             if (homeLabel) homeLabel.textContent = homeText ? `(${homeText})` : "";
             if (homeVal) homeVal.textContent = homeText || "(read-only)";
-            setProviderInput("arkeodNode", providerSettingsCache.ARKEOD_NODE);
-            setProviderInput("arkeodRest", providerSettingsCache.ARKEO_REST_API_PORT);
-            setProviderInput("sentinelNode", providerSettingsCache.SENTINEL_NODE);
-            setProviderInput("sentinelPort", providerSettingsCache.SENTINEL_PORT);
-            setProviderInput("adminPort", providerSettingsCache.ADMIN_PORT);
-            setProviderInput("adminApiPort", providerSettingsCache.ADMIN_API_PORT);
-            setProviderInput("hotwalletMnemonic", providerSettingsCache.KEY_MNEMONIC);
-            const adminPwdInput = document.getElementById("adminPasswordInput");
-            if (adminPwdInput) adminPwdInput.value = data.admin_password || "";
-            const pubEl = document.getElementById("providerPubkeyDisplay");
+            setInputWithDefault("arkeodNode", subscriberSettingsCache.ARKEOD_NODE, "ARKEOD_NODE");
+            const restApiVal = subscriberSettingsCache.ARKEO_REST_API || subscriberSettingsCache.EXTERNAL_ARKEO_REST_API;
+            setInputWithDefault("arkeodRest", restApiVal, "ARKEO_REST_API");
+            setInputWithDefault("adminPort", subscriberSettingsCache.ADMIN_PORT, "ADMIN_PORT");
+            setInputWithDefault("adminApiPort", subscriberSettingsCache.ADMIN_API_PORT, "ADMIN_API_PORT");
+            setInputWithDefault("cacheFetchInterval", subscriberSettingsCache.CACHE_FETCH_INTERVAL, "CACHE_FETCH_INTERVAL");
+            const allowLocalhost = subscriberSettingsCache.ALLOW_LOCALHOST_SENTINEL_URIS;
+            const allowLocalhostEl = document.getElementById("allowLocalhostSentinel");
+            if (allowLocalhostEl) {
+                const val = String(allowLocalhost || "").toLowerCase();
+                allowLocalhostEl.checked = val === "1" || val === "true" || val === "yes" || val === "on";
+            }
+            setSubscriberInput("hotwalletMnemonic", subscriberSettingsCache.KEY_MNEMONIC);
+            const pubEl = document.getElementById("subscriberPubkeyDisplay");
             const pubkey = data.pubkey && data.pubkey.bech32 ? data.pubkey.bech32 : "";
             if (pubEl) pubEl.textContent = pubkey ? pubkey : "(unavailable)";
             const overviewEl = document.getElementById("overviewPubkeyDisplay");
             if (overviewEl) overviewEl.textContent = pubkey ? formatPubkeyShort(pubkey) : "(unavailable)";
             if (resultEl) {
                 const src = data.mnemonic_source ? `Mnemonic source: ${data.mnemonic_source}.` : "";
-                resultEl.textContent = `Loaded provider settings${data.provider_settings_path ? ` from ${data.provider_settings_path}` : ""}. ${src}`;
+                resultEl.textContent = `Loaded subscriber settings${data.subscriber_settings_path ? ` from ${data.subscriber_settings_path}` : ""}. ${src}`;
             }
         } catch (e) {
-            if (resultEl) resultEl.textContent = `Failed to load provider settings: ${e}`;
+            if (resultEl) resultEl.textContent = `Failed to load subscriber settings: ${e}`;
         }
     }
 
-    async function saveProviderSettings(event) {
+    async function saveSubscriberSettings(event) {
         if (event && event.preventDefault) event.preventDefault();
         const normalizeRpc = (val) => {
             if (!val) return "";
@@ -470,26 +386,26 @@
         };
         const payload = {
             settings: {
-                KEY_NAME: document.getElementById("keyName")?.value || "",
-                KEY_KEYRING_BACKEND: providerSettingsCache.KEY_KEYRING_BACKEND || "",
-                CHAIN_ID: document.getElementById("chainId")?.value || "",
-                ARKEOD_HOME: providerSettingsCache.ARKEOD_HOME || "",
-                ARKEOD_NODE: normalizeRpc(document.getElementById("arkeodNode")?.value || ""),
-                ARKEO_REST_API_PORT: document.getElementById("arkeodRest")?.value || "",
-                SENTINEL_NODE: document.getElementById("sentinelNode")?.value || "",
-                SENTINEL_PORT: document.getElementById("sentinelPort")?.value || "",
-                ADMIN_PORT: document.getElementById("adminPort")?.value || "",
-                ADMIN_API_PORT: document.getElementById("adminApiPort")?.value || "",
+                SUBSCRIBER_NAME: document.getElementById("subscriberName")?.value || DEFAULTS.SUBSCRIBER_NAME,
+                KEY_NAME: document.getElementById("keyName")?.value || DEFAULTS.KEY_NAME,
+                KEY_KEYRING_BACKEND: subscriberSettingsCache.KEY_KEYRING_BACKEND || DEFAULTS.KEY_KEYRING_BACKEND,
+                CHAIN_ID: document.getElementById("chainId")?.value || DEFAULTS.CHAIN_ID,
+                ARKEOD_HOME: subscriberSettingsCache.ARKEOD_HOME || DEFAULTS.ARKEOD_HOME,
+                ARKEOD_NODE: normalizeRpc(document.getElementById("arkeodNode")?.value || DEFAULTS.ARKEOD_NODE),
+                ARKEO_REST_API: document.getElementById("arkeodRest")?.value || DEFAULTS.ARKEO_REST_API,
+                ADMIN_PORT: document.getElementById("adminPort")?.value || DEFAULTS.ADMIN_PORT,
+                ADMIN_API_PORT: document.getElementById("adminApiPort")?.value || DEFAULTS.ADMIN_API_PORT,
+                CACHE_FETCH_INTERVAL: document.getElementById("cacheFetchInterval")?.value || DEFAULTS.CACHE_FETCH_INTERVAL,
+                ALLOW_LOCALHOST_SENTINEL_URIS: document.getElementById("allowLocalhostSentinel")?.checked ? "1" : "0",
                 KEY_MNEMONIC: document.getElementById("hotwalletMnemonic")?.value || "",
             },
         };
-        const adminPasswordVal = document.getElementById("adminPasswordInput")?.value || "";
-        const resultEl = document.getElementById("providerSettingsResult");
+        const resultEl = document.getElementById("subscriberSettingsResult");
         let finalMessage = "Saving settings...";
         let isError = false;
         setStatusMessage(finalMessage, false);
         try {
-            const res = await fetch(resolveApi("/api/provider-settings"), {
+            const res = await fetch(resolveApi("/api/subscriber-settings"), {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(payload),
@@ -498,14 +414,14 @@
             if (!res.ok) {
                 throw new Error(data && data.error ? data.error : res.statusText);
             }
-            providerSettingsCache = data.settings || providerSettingsCache;
+            subscriberSettingsCache = data.settings || subscriberSettingsCache;
             if (data.pubkey && data.pubkey.bech32) {
-                const pubEl = document.getElementById("providerPubkeyDisplay");
+                const pubEl = document.getElementById("subscriberPubkeyDisplay");
                 if (pubEl) pubEl.textContent = data.pubkey.bech32;
                 const overviewEl = document.getElementById("overviewPubkeyDisplay");
                 if (overviewEl) overviewEl.textContent = formatPubkeyShort(data.pubkey.bech32);
             } else {
-                const pubEl = document.getElementById("providerPubkeyDisplay");
+                const pubEl = document.getElementById("subscriberPubkeyDisplay");
                 if (pubEl && (!pubEl.textContent || pubEl.textContent === "(unavailable)")) {
                     pubEl.textContent = "(unavailable)";
                 }
@@ -514,29 +430,16 @@
                     overviewEl.textContent = "(unavailable)";
                 }
             }
-            // Save admin password (blank disables)
-            try {
-                await fetch(resolveApi("/api/admin-password"), {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ password: adminPasswordVal }),
-                });
-                sessionStorage.setItem("adminAuthed", adminPasswordVal ? "1" : "0");
-                adminPasswordEnabled = !!adminPasswordVal;
-            } catch (e) {
-                // ignore password save errors to avoid blocking settings save
-            }
             if (resultEl) {
                 const rotated = data.mnemonic_rotated ? "Hotwallet re-imported with new mnemonic. " : "";
-                finalMessage = `${rotated}Saved provider settings${data.provider_settings_path ? ` to ${data.provider_settings_path}` : ""}.`;
+                finalMessage = `${rotated}Saved subscriber settings${data.subscriber_settings_path ? ` to ${data.subscriber_settings_path}` : ""}.`;
             }
             await loadAdminInfo();
-            await loadProviderSettings(false);
-            await fetchAdminPasswordStatus(false);
+            await loadSubscriberSettings(false);
             // Redirect to dashboard after successful save
             window.location.href = "index.html";
         } catch (e) {
-            finalMessage = `Failed to save provider settings: ${e}`;
+            finalMessage = `Failed to save subscriber settings: ${e}`;
             isError = true;
         } finally {
             setStatusMessage(finalMessage, isError);
@@ -544,16 +447,36 @@
     }
 
     window.addEventListener("load", () => {
-        if (sessionStorage.getItem("requireProviderSetup") === "1") {
-            sessionStorage.removeItem("requireProviderSetup");
-            showSetupRequiredModal();
-        }
-        fetchAdminPasswordStatus(true);
         loadAdminInfo();
-        loadProviderSettings();
+        loadSubscriberSettings();
         setInterval(loadAdminInfo, 5000);
+        maybeShowSettingsRequiredModal();
     });
+
+    function maybeShowSettingsRequiredModal() {
+        const params = new URLSearchParams(window.location.search);
+        const needs = params.get("needsSettings") === "1" || (window.location.hash || "").toLowerCase().includes("needssettings");
+        if (needs) {
+            const modal = document.getElementById("settingsRequiredModal");
+            if (modal) modal.classList.remove("hidden");
+        }
+    }
+
+    function dismissSettingsRequired() {
+        const modal = document.getElementById("settingsRequiredModal");
+        if (modal) modal.classList.add("hidden");
+    }
 </script>
+
+<div id="settingsRequiredModal" class="overlay hidden">
+    <div class="overlay-card">
+        <h3>Setup Required</h3>
+        <p class="muted">Please configure subscriber settings before using the app.</p>
+        <div class="actions center mt-6">
+            <button class="primary" onclick="dismissSettingsRequired()">Got it</button>
+        </div>
+    </div>
+</div>
 
 </body>
 </html>

@@ -18,19 +18,15 @@ from urllib import request, error
 from urllib.parse import urlparse
 
 ARKEOD_HOME = os.path.expanduser(os.getenv("ARKEOD_HOME", "/root/.arkeo"))
-ARKEOD_NODE = (
-    os.getenv("ARKEOD_NODE")
-    or os.getenv("EXTERNAL_ARKEOD_NODE")
-    or "tcp://provider1.innovationtheory.com:26657"
-)
-ARKEO_REST_API = (
-    os.getenv("ARKEO_REST_API_PORT")
-    or os.getenv("EXTERNAL_ARKEO_REST_API")
-    or "http://provider1.innovationtheory.com:1317"
-)
+# These are dynamically refreshed from subscriber-settings.json before each fetch cycle
+ARKEOD_NODE = os.getenv("ARKEOD_NODE") or os.getenv("EXTERNAL_ARKEOD_NODE") or "tcp://provider1.innovationtheory.com:26657"
+ARKEO_REST_API = os.getenv("ARKEO_REST_API") or os.getenv("EXTERNAL_ARKEO_REST_API") or "http://provider1.innovationtheory.com:1317"
 CACHE_DIR = os.getenv("CACHE_DIR", "/app/cache")
-CACHE_FETCH_INTERVAL = 0  # hard-disabled background loop
+CACHE_FETCH_INTERVAL = 0  # populated below via env
 STATUS_FILE = os.path.join(CACHE_DIR, "_sync_status.json")
+SUBSCRIBER_SETTINGS_PATH = os.path.join(CACHE_DIR, "subscriber-settings.json")
+METADATA_CACHE_PATH = os.path.join(CACHE_DIR, "metadata.json")
+ALLOW_LOCALHOST_SENTINEL_URIS = str(os.getenv("ALLOW_LOCALHOST_SENTINEL_URIS") or "0").lower() in {"1", "true", "yes", "y", "on"}
 
 
 def run_list(cmd: List[str]) -> Tuple[int, str]:
@@ -166,13 +162,126 @@ def _is_external(uri: str | None) -> bool:
         host = (parsed.hostname or "").lower()
         if not parsed.scheme or not host:
             return False
-        if host == "localhost":
-            return False
-        if host.startswith("127."):
-            return False
+        if host == "localhost" or host.startswith("127."):
+            return ALLOW_LOCALHOST_SENTINEL_URIS
         return True
     except Exception:
         return False
+
+
+def _is_localhost_uri(uri: str | None) -> bool:
+    if not uri:
+        return False
+    try:
+        parsed = urlparse(uri)
+        host = (parsed.hostname or "").lower()
+        return host == "localhost" or host.startswith("127.")
+    except Exception:
+        return False
+
+
+def _refresh_runtime_settings() -> None:
+    """Reload ARKEOD_NODE and ARKEO_REST_API from subscriber-settings.json if present."""
+    global ARKEOD_NODE, ARKEO_REST_API, ALLOW_LOCALHOST_SENTINEL_URIS
+    settings = {}
+    try:
+        with open(SUBSCRIBER_SETTINGS_PATH, "r", encoding="utf-8") as f:
+            settings = json.load(f) or {}
+    except Exception:
+        settings = {}
+    node_val = settings.get("ARKEOD_NODE") or os.getenv("ARKEOD_NODE") or os.getenv("EXTERNAL_ARKEOD_NODE") or ARKEOD_NODE
+    rest_val = settings.get("ARKEO_REST_API") or os.getenv("ARKEO_REST_API") or os.getenv("EXTERNAL_ARKEO_REST_API") or ARKEO_REST_API
+    allow_local = settings.get("ALLOW_LOCALHOST_SENTINEL_URIS") or os.getenv("ALLOW_LOCALHOST_SENTINEL_URIS") or "0"
+    if node_val:
+        ARKEOD_NODE = str(node_val).strip()
+    if rest_val:
+        ARKEO_REST_API = str(rest_val).strip()
+    ALLOW_LOCALHOST_SENTINEL_URIS = str(allow_local).lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+# Resolve fetch interval after helpers are defined
+CACHE_FETCH_INTERVAL = _env_int("CACHE_FETCH_INTERVAL", 150)
+
+
+def _load_metadata_cache() -> dict[str, dict[str, Any]]:
+    try:
+        with open(METADATA_CACHE_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            items = data.get("metadata") or data
+            if isinstance(items, dict):
+                return items
+    except Exception:
+        pass
+    return {}
+
+
+def _save_metadata_cache(cache: dict[str, dict[str, Any]]) -> None:
+    ensure_cache_dir()
+    payload = {"metadata": cache}
+    tmp_path = f"{METADATA_CACHE_PATH}.tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=True, indent=2)
+        os.replace(tmp_path, METADATA_CACHE_PATH)
+    except Exception:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+
+
+def _update_metadata_cache_from_providers(provider_services_payload: Dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Fetch metadata for unique metadata_uri entries, storing only successful JSON parses."""
+    cache_map = _load_metadata_cache()
+    changed = False
+    data = provider_services_payload.get("data") if isinstance(provider_services_payload, dict) else {}
+    prov_entries = []
+    if isinstance(data, dict):
+        prov_entries = data.get("providers") or data.get("provider") or []
+    if not isinstance(prov_entries, list):
+        prov_entries = []
+
+    uris = set()
+    def _collect_mu(entry: dict[str, Any] | None):
+        if not entry or not isinstance(entry, dict):
+            return
+        mu = entry.get("metadata_uri") or entry.get("metadataUri")
+        if mu and _is_external(mu):
+            uris.add(mu)
+
+    for p in prov_entries:
+        if not isinstance(p, dict):
+            continue
+        _collect_mu(p)
+        if isinstance(p.get("services"), list):
+            for s in p["services"]:
+                _collect_mu(s if isinstance(s, dict) else None)
+        if isinstance(p.get("service"), list):
+            for s in p["service"]:
+                _collect_mu(s if isinstance(s, dict) else None)
+
+    for mu in uris:
+        if mu in cache_map:
+            continue
+        data_val, err_val, status_val = fetch_metadata_uri(mu)
+        if status_val == 1 and isinstance(data_val, dict):
+            cache_map[mu] = {"metadata_uri": mu, "fetched_at": timestamp(), "data": data_val}
+            changed = True
+    if changed:
+        _save_metadata_cache(cache_map)
+    return cache_map
 
 
 def build_providers_metadata(provider_payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -258,14 +367,28 @@ def build_providers_metadata(provider_payload: Dict[str, Any]) -> Dict[str, Any]
             provider_status_raw = str(prov_obj.get("status") or "").lower()
 
         if _is_external(mu):
-            if mu in url_cache:
-                meta_data_val, meta_err_val, status_val = url_cache[mu]
+            if ALLOW_LOCALHOST_SENTINEL_URIS and _is_localhost_uri(mu):
+                # Skip fetching localhost metadata when allowed; treat as active and keep a fallback moniker
+                entry["metadata"] = None
+                entry["metadata_error"] = None
+                entry["status"] = 1
+                if pubkey and not entry.get("provider_moniker"):
+                    entry["provider_moniker"] = pubkey
             else:
-                meta_data_val, meta_err_val, status_val = fetch_metadata_uri(mu)
-                url_cache[mu] = (meta_data_val, meta_err_val, status_val)
-            entry["metadata"] = meta_data_val if status_val == 1 else None
-            entry["metadata_error"] = meta_err_val if status_val != 1 else None
-            entry["status"] = status_val
+                if mu in url_cache:
+                    meta_data_val, meta_err_val, status_val = url_cache[mu]
+                else:
+                    meta_data_val, meta_err_val, status_val = fetch_metadata_uri(mu)
+                    url_cache[mu] = (meta_data_val, meta_err_val, status_val)
+                entry["metadata"] = meta_data_val if status_val == 1 else None
+                entry["metadata_error"] = meta_err_val if status_val != 1 else None
+                entry["status"] = status_val
+                # Try to set provider_moniker from metadata if available
+                if not entry.get("provider_moniker") and isinstance(meta_data_val, dict):
+                    cfg = meta_data_val.get("config") if isinstance(meta_data_val.get("config"), dict) else {}
+                    moniker_val = cfg.get("moniker") or meta_data_val.get("moniker")
+                    if moniker_val:
+                        entry["provider_moniker"] = moniker_val
         else:
             # No external metadata_uri; cannot mark active
             entry["metadata"] = None
@@ -277,16 +400,22 @@ def build_providers_metadata(provider_payload: Dict[str, Any]) -> Dict[str, Any]
             entry["online_service_count"] = service_counts.get(pk, 0)
 
     # Keep only active entries (status == 1) with at least one ONLINE service
-    active_only = [
-        e
-        for e in enriched
-        if (e.get("status") == 1 or e.get("status") == "1")
-        and (e.get("online_service_count") or 0) > 0
-    ]
+    active_only = []
+    for e in enriched:
+        if (e.get("status") == 1 or e.get("status") == "1") and (e.get("online_service_count") or 0) > 0:
+            if e.get("pubkey") and not e.get("provider_moniker"):
+                # Fallback: use pubkey as moniker if none found
+                e["provider_moniker"] = e["pubkey"]
+            active_only.append(e)
     return {
         "fetched_at": timestamp(),
         "source": "provider-services",
         "providers": active_only,
+        "metadata_uri_sources": {
+            "allow_localhost": ALLOW_LOCALHOST_SENTINEL_URIS,
+            "node": ARKEOD_NODE,
+            "rest_api": ARKEO_REST_API,
+        },
     }
 
 
@@ -341,6 +470,87 @@ def build_active_services(provider_services_payload: Dict[str, Any], active_prov
         "active_services": active_services,
     }
 
+
+def build_active_providers_from_active_services(active_services_payload: Dict[str, Any], provider_services_payload: Dict[str, Any], metadata_cache: dict[str, dict[str, Any]] | None = None) -> Dict[str, Any]:
+    """Build active_providers.json: one entry per provider pubkey with online services and cached metadata."""
+    active_services = active_services_payload.get("active_services") if isinstance(active_services_payload, dict) else []
+    if not isinstance(active_services, list):
+        active_services = []
+    meta_cache = metadata_cache or {}
+
+    # Providers that actually have active services.
+    active_provider_pks = set()
+    for svc in active_services:
+        if isinstance(svc, dict) and svc.get("provider_pubkey"):
+            active_provider_pks.add(str(svc.get("provider_pubkey")))
+
+    data = provider_services_payload.get("data") if isinstance(provider_services_payload, dict) else {}
+    prov_entries = []
+    if isinstance(data, dict):
+        prov_entries = data.get("providers") or data.get("provider") or []
+    if not isinstance(prov_entries, list):
+        prov_entries = []
+
+    providers: list[dict[str, Any]] = []
+    seen_pubkeys: set[str] = set()
+    providers_seen = 0
+
+    for p in prov_entries:
+        if not isinstance(p, dict):
+            continue
+        providers_seen += 1
+        pk = p.get("pub_key") or p.get("pubkey") or p.get("pubKey")
+        if not pk or pk not in active_provider_pks or pk in seen_pubkeys:
+            continue
+
+        status_val = p.get("status")
+        status_str = str(status_val).strip().lower() if status_val is not None else ""
+        if status_str != "online" and status_val not in (1, True, "1", "ONLINE", "online"):
+            continue
+
+        mu = p.get("metadata_uri") or p.get("metadataUri")
+        if not mu or not _is_external(mu):
+            continue
+
+        meta_entry = meta_cache.get(mu)
+        meta_ok = bool(meta_entry)
+        meta_flag = bool(p.get("metadata_uri_active")) or (_is_localhost_uri(mu) and ALLOW_LOCALHOST_SENTINEL_URIS)
+        # Require cached metadata and an active flag (or allowed localhost toggle).
+        if not meta_ok or not meta_flag:
+            continue
+
+        entry = dict(p)
+        entry["provider_pubkey"] = pk
+        entry["metadata_uri_active"] = bool(meta_flag and meta_ok)
+        entry["metadata"] = meta_entry.get("data")
+        # Prefer moniker from metadata when available.
+        meta_val = entry["metadata"]
+        if isinstance(meta_val, dict):
+            cfg = meta_val.get("config") if isinstance(meta_val.get("config"), dict) else {}
+            moniker_val = cfg.get("moniker") or meta_val.get("moniker")
+            if moniker_val:
+                entry["provider_moniker"] = moniker_val
+        if not entry.get("provider_moniker"):
+            entry["provider_moniker"] = pk
+
+        providers.append(entry)
+        seen_pubkeys.add(pk)
+
+    return {
+        "fetched_at": timestamp(),
+        "source": "active_services",
+        "providers": providers,
+        "metadata_uri_sources": {
+            "allow_localhost": ALLOW_LOCALHOST_SENTINEL_URIS,
+            "node": ARKEOD_NODE,
+            "rest_api": ARKEO_REST_API,
+        },
+        "debug_counts": {
+            "active_services": len(active_services),
+            "providers_seen": providers_seen,
+            "providers_kept": len(providers),
+        },
+    }
 
 def build_active_service_types(active_services_payload: Dict[str, Any], service_types_payload: Dict[str, Any]) -> Dict[str, Any]:
     """Derive active_service_types.json with unique service ids and counts, enriched with service type metadata."""
@@ -597,14 +807,21 @@ def _sync_listeners_from_active(active_services_payload: Dict[str, Any], active_
     }
 
 
-def fetch_once(commands: Dict[str, List[str]], record_status: bool = False) -> Dict[str, Dict[str, Any]]:
+def fetch_once(commands: Dict[str, List[str]] | None = None, record_status: bool = False) -> Dict[str, Dict[str, Any]]:
     results: Dict[str, Dict[str, Any]] = {}
+    _refresh_runtime_settings()
+    print(
+        f"[cache] fetch_once start node={ARKEOD_NODE} rest_api={ARKEO_REST_API} allow_localhost={ALLOW_LOCALHOST_SENTINEL_URIS}",
+        flush=True,
+    )
+    commands = build_commands()
     start_ts = timestamp()
     if record_status:
         mark_sync_start(start_ts)
     ok = True
     error_msg = None
     try:
+        metadata_cache: dict[str, dict[str, Any]] | None = None
         for name, cmd in commands.items():
             if name == "service-types":
                 payload = fetch_services_rest()
@@ -614,18 +831,54 @@ def fetch_once(commands: Dict[str, List[str]], record_status: bool = False) -> D
                 if code != 0:
                     ok = False
                     error_msg = f"{name} exit={code}"
+            # If provider-services succeeded, update metadata cache and annotate payload
+            if name == "provider-services" and payload.get("exit_code") == 0:
+                metadata_cache = _update_metadata_cache_from_providers(payload)
+                # mark metadata_uri_active flags
+                try:
+                    active_uris = set(metadata_cache.keys()) if metadata_cache else set()
+                    data_block = payload.get("data")
+                    prov_entries = data_block.get("providers") or data_block.get("provider") if isinstance(data_block, dict) else []
+                    if isinstance(prov_entries, list):
+                        for p in prov_entries:
+                            if not isinstance(p, dict):
+                                continue
+                            mu = p.get("metadata_uri") or p.get("metadataUri")
+                            if mu and mu in active_uris:
+                                p["metadata_uri_active"] = True
+                            services_field = []
+                            if isinstance(p.get("services"), list):
+                                services_field = p["services"]
+                            elif isinstance(p.get("service"), list):
+                                services_field = p["service"]
+                            for s in services_field:
+                                if not isinstance(s, dict):
+                                    continue
+                                mu_svc = s.get("metadata_uri") or s.get("metadataUri")
+                                if mu_svc and mu_svc in active_uris:
+                                    s["metadata_uri_active"] = True
+                except Exception:
+                    pass
             write_cache(name, payload)
             results[name] = payload
-        # Derive active_providers.json from provider-services (fetch external metadata_uri with timeout)
-        providers_payload = None
+        # expose metadata cache in results for UI visibility
+        if metadata_cache is None:
+            try:
+                metadata_cache = _load_metadata_cache()
+            except Exception:
+                metadata_cache = {}
+        if metadata_cache is not None:
+            results["metadata"] = {"metadata": metadata_cache, "exit_code": 0}
+        # Derive active_services.json directly from provider-services
+        active_services_payload = None
         if "provider-services" in results and results["provider-services"].get("exit_code") == 0:
-            providers_payload = build_providers_metadata(results["provider-services"])
-            write_cache("active_providers", providers_payload)
-        # Derive active_services.json only after providers_payload exists
-        if providers_payload is not None:
-            active_services_payload = build_active_services(results["provider-services"], providers_payload)
+            active_services_payload = build_active_services(results["provider-services"], None)
             write_cache("active_services", active_services_payload)
             results["active_services"] = active_services_payload
+        # Derive active_providers.json from active_services (fetch external metadata_uri with timeout)
+        if active_services_payload is not None:
+            providers_payload = build_active_providers_from_active_services(active_services_payload, results["provider-services"], metadata_cache or {})
+            write_cache("active_providers", providers_payload)
             results["active_providers"] = providers_payload
             # Derive active_service_types.json if service-types cache exists
             if "service-types" in results and results["service-types"].get("exit_code") == 0:
@@ -653,7 +906,7 @@ def main() -> None:
     args = parser.parse_args()
 
     ensure_cache_dir()
-    commands = build_commands()
+    _refresh_runtime_settings()
     interval_raw = CACHE_FETCH_INTERVAL
     if interval_raw <= 0:
         print(
@@ -670,10 +923,10 @@ def main() -> None:
         flush=True,
     )
     if args.once:
-        fetch_once(commands, record_status=True)
+        fetch_once(record_status=True)
         return
     while True:
-        fetch_once(commands, record_status=True)
+        fetch_once(record_status=True)
         time.sleep(interval)
 
 

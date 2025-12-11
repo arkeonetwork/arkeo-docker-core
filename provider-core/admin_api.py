@@ -2068,6 +2068,7 @@ def sentinel_config():
 def provider_settings_get():
     """Return provider settings (replacement for provider.env) plus mnemonic if available."""
     settings = _merge_provider_settings()
+    settings_exists = bool(PROVIDER_SETTINGS_PATH and os.path.isfile(PROVIDER_SETTINGS_PATH))
     mnemonic, mnemonic_source = _read_hotwallet_mnemonic(settings)
     generated = False
     if mnemonic:
@@ -2095,6 +2096,7 @@ def provider_settings_get():
         {
             "settings": settings,
             "provider_settings_path": PROVIDER_SETTINGS_PATH,
+            "settings_exists": settings_exists,
             "mnemonic_source": mnemonic_source,
             "mnemonic_found": bool(mnemonic),
             "mnemonic_generated": generated,
@@ -2185,6 +2187,7 @@ def provider_settings_save():
             "import_result": import_result,
             "generated_result": generated_result,
             "settings": merged,
+            "settings_exists": True,
         }
     )
 

@@ -54,7 +54,7 @@ Make sure these ports are open in your firewall.
 ## Using the Subscriber Core Admin
 Browse to `http://localhost:8079` (or your host IP:8079).
 - The header shows your subscriber pubkey and address. Fund the hot wallet with a small amount of ARKEO (it’s a hot wallet).
-- The admin sync runs for a while on first load (pulls providers/contracts/services, filters inactive, builds marketplace cache). By default it repeats about every 5 minutes. To disable the background loop, set `CACHE_FETCH_INTERVAL=0` (manual “Refresh” still works).
+- The admin sync runs for a while on first load (pulls providers/contracts/services, filters inactive, builds marketplace cache). By default it repeats about every 150 seconds. To disable the background loop, set `CACHE_FETCH_INTERVAL=0` (manual “Refresh” still works).
 
 ## Add listeners (proxies)
 - Each listener exposes a port that wraps Arkeo subscriber contract handling (auto PAYG contract creation when needed).

@@ -35,7 +35,6 @@ LISTENERS_FILE = os.path.join(CACHE_DIR, "listeners.json")
 LISTENER_PORT_START = int(os.getenv("LISTENER_PORT_START", "62001"))
 LISTENER_PORT_END = int(os.getenv("LISTENER_PORT_END", "62100"))
 ACTIVE_SERVICE_TYPES_FILE = os.path.join(CACHE_DIR, "active_service_types.json")
-SUBSCRIBER_INFO_FILE = os.path.join(CACHE_DIR, "subscriber_info.json")
 LOG_DIR = os.path.join(CACHE_DIR, "logs")
 _LISTENER_SERVERS: dict[int, dict] = {}
 _LISTENER_LOCK = threading.Lock()
@@ -130,7 +129,7 @@ def _strip_quotes(val: str | None) -> str:
 ARKEOD_NODE = _strip_quotes(
     os.getenv("ARKEOD_NODE")
     or os.getenv("EXTERNAL_ARKEOD_NODE")
-    or "tcp://provider1.innovationtheory.com:26657"
+    or "tcp://127.0.0.1:26657"
 )
 CHAIN_ID = _strip_quotes(os.getenv("CHAIN_ID") or os.getenv("ARKEOD_CHAIN_ID") or "")
 NODE_ARGS = ["--node", ARKEOD_NODE] if ARKEOD_NODE else []
@@ -146,6 +145,10 @@ FEES_DEFAULT = os.getenv("TX_FEES") or "200uarkeo"
 API_PORT = int(os.getenv("ADMIN_API_PORT", "9998"))
 SENTINEL_CONFIG_PATH = os.getenv("SENTINEL_CONFIG_PATH", "/app/config/sentinel.yaml")
 SENTINEL_ENV_PATH = os.getenv("SENTINEL_ENV_PATH", "/app/config/sentinel.env")
+SUBSCRIBER_ENV_PATH = os.getenv("SUBSCRIBER_ENV_PATH", "/app/config/subscriber.env")
+SUBSCRIBER_SETTINGS_PATH = os.getenv("SUBSCRIBER_SETTINGS_PATH") or os.path.join(
+    CACHE_DIR or "/app/cache", "subscriber-settings.json"
+)
 
 # PAYG proxy defaults (can be overridden via env; per-listener overrides later)
 PROXY_AUTO_CREATE = True
@@ -191,6 +194,268 @@ def run_list(cmd: list[str]) -> tuple[int, str]:
         return 0, out.decode("utf-8")
     except subprocess.CalledProcessError as e:
         return e.returncode, e.output.decode("utf-8")
+
+
+def run_with_input(cmd: list[str], input_text: str) -> tuple[int, str]:
+    """Run a command with stdin content."""
+    try:
+        proc = subprocess.run(
+            cmd,
+            input=input_text.encode("utf-8"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        return proc.returncode, proc.stdout.decode("utf-8")
+    except Exception as e:
+        return 1, str(e)
+
+
+def _expand_tilde(val: str | None) -> str:
+    if not val:
+        return ""
+    return os.path.expanduser(val)
+
+
+def _ensure_tcp_scheme(url: str | None) -> str:
+    """Force RPC URLs to use tcp:// scheme; leave empty or already-tcp unchanged."""
+    if not url:
+        return ""
+    s = str(url).strip()
+    lower = s.lower()
+    if lower.startswith("tcp://"):
+        return s
+    if lower.startswith("http://"):
+        return "tcp://" + s[len("http://") :]
+    if lower.startswith("https://"):
+        return "tcp://" + s[len("https://") :]
+    return s
+
+
+def _default_subscriber_settings() -> dict:
+    """Return defaults from env + sane fallbacks."""
+    rest_api_env = os.getenv("ARKEO_REST_API") or os.getenv("EXTERNAL_ARKEO_REST_API") or os.getenv("ARKEO_REST_API_PORT") or ""
+    defaults = {
+        "SUBSCRIBER_NAME": os.getenv("SUBSCRIBER_NAME", "Arkeo Core Subscriber"),
+        "KEY_NAME": os.getenv("KEY_NAME", KEY_NAME),
+        "KEY_KEYRING_BACKEND": os.getenv("KEY_KEYRING_BACKEND", KEYRING),
+        "KEY_MNEMONIC": os.getenv("KEY_MNEMONIC", KEY_MNEMONIC),
+        "CHAIN_ID": _strip_quotes(os.getenv("CHAIN_ID") or os.getenv("ARKEOD_CHAIN_ID") or ""),
+        "ARKEOD_HOME": _expand_tilde(os.getenv("ARKEOD_HOME") or ARKEOD_HOME),
+        "ARKEOD_NODE": _strip_quotes(
+            os.getenv("ARKEOD_NODE") or os.getenv("EXTERNAL_ARKEOD_NODE") or ARKEOD_NODE
+        ),
+        "ARKEO_REST_API": rest_api_env,
+        "ADMIN_PORT": os.getenv("ADMIN_PORT") or os.getenv("ENV_ADMIN_PORT") or "8079",
+        "ADMIN_API_PORT": os.getenv("ADMIN_API_PORT") or str(API_PORT),
+        "ALLOW_LOCALHOST_SENTINEL_URIS": os.getenv("ALLOW_LOCALHOST_SENTINEL_URIS") or "0",
+    }
+    return defaults
+
+
+def _load_subscriber_settings_file() -> dict | None:
+    """Load persisted subscriber settings if present."""
+    path = SUBSCRIBER_SETTINGS_PATH
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _write_subscriber_settings_file(settings: dict) -> None:
+    """Persist subscriber settings JSON alongside cache."""
+    path = SUBSCRIBER_SETTINGS_PATH
+    if not path:
+        return
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2)
+    except OSError:
+        pass
+
+
+def _merge_subscriber_settings(overrides: dict | None = None) -> dict:
+    """Merge defaults, persisted file, and optional overrides."""
+    merged = _default_subscriber_settings()
+    saved = _load_subscriber_settings_file()
+    if isinstance(saved, dict):
+        merged.update(saved)
+    if overrides and isinstance(overrides, dict):
+        merged.update(overrides)
+    # Normalize legacy/external keys
+    if merged.get("EXTERNAL_ARKEOD_NODE") and not merged.get("ARKEOD_NODE"):
+        merged["ARKEOD_NODE"] = merged["EXTERNAL_ARKEOD_NODE"]
+    merged.pop("EXTERNAL_ARKEOD_NODE", None)
+    if merged.get("EXTERNAL_ARKEO_REST_API") and not merged.get("ARKEO_REST_API_PORT") and not merged.get("ARKEO_REST_API"):
+        merged["ARKEO_REST_API"] = merged["EXTERNAL_ARKEO_REST_API"]
+    merged.pop("EXTERNAL_ARKEO_REST_API", None)
+    if merged.get("ARKEO_REST_API_PORT") and not merged.get("ARKEO_REST_API"):
+        merged["ARKEO_REST_API"] = merged["ARKEO_REST_API_PORT"]
+    merged.pop("ARKEO_REST_API_PORT", None)
+    merged["ARKEOD_HOME"] = _expand_tilde(merged.get("ARKEOD_HOME") or ARKEOD_HOME)
+    if merged.get("ARKEOD_NODE"):
+        merged["ARKEOD_NODE"] = _ensure_tcp_scheme(_strip_quotes(merged.get("ARKEOD_NODE") or ""))
+    merged.pop("SENTINEL_NODE", None)
+    merged.pop("SENTINEL_PORT", None)
+    return merged
+
+
+def _apply_subscriber_settings(settings: dict) -> None:
+    """Apply subscriber settings to globals and os.environ for runtime use."""
+    global KEY_NAME, KEYRING, ARKEOD_HOME, ARKEOD_NODE, CHAIN_ID, NODE_ARGS, CHAIN_ARGS, KEY_MNEMONIC
+    if not isinstance(settings, dict):
+        return
+    KEY_NAME = settings.get("KEY_NAME", KEY_NAME)
+    KEYRING = settings.get("KEY_KEYRING_BACKEND", KEYRING)
+    KEY_MNEMONIC = settings.get("KEY_MNEMONIC", KEY_MNEMONIC)
+    ARKEOD_HOME = _expand_tilde(settings.get("ARKEOD_HOME") or ARKEOD_HOME)
+    node_val = settings.get("ARKEOD_NODE") or ARKEOD_NODE
+    ARKEOD_NODE = _ensure_tcp_scheme(_strip_quotes(node_val))
+    CHAIN_ID = _strip_quotes(settings.get("CHAIN_ID") or CHAIN_ID)
+    NODE_ARGS = ["--node", ARKEOD_NODE] if ARKEOD_NODE else []
+    CHAIN_ARGS = ["--chain-id", CHAIN_ID] if CHAIN_ID else []
+    rest_api_val = settings.get("ARKEO_REST_API") or ""
+
+    env_overrides = {
+        "SUBSCRIBER_NAME": settings.get("SUBSCRIBER_NAME", ""),
+        "KEY_NAME": KEY_NAME,
+        "KEY_KEYRING_BACKEND": KEYRING,
+        "KEY_MNEMONIC": settings.get("KEY_MNEMONIC", ""),
+        "CHAIN_ID": CHAIN_ID,
+        "ARKEOD_HOME": ARKEOD_HOME,
+        "ARKEOD_NODE": ARKEOD_NODE,
+        "ARKEO_REST_API": rest_api_val,
+        "ADMIN_PORT": settings.get("ADMIN_PORT", ""),
+        "ADMIN_API_PORT": settings.get("ADMIN_API_PORT", ""),
+        "ALLOW_LOCALHOST_SENTINEL_URIS": settings.get("ALLOW_LOCALHOST_SENTINEL_URIS", ""),
+    }
+    for k, v in env_overrides.items():
+        if v is None:
+            continue
+        os.environ[k] = str(v)
+
+
+def _mnemonic_file_path(settings: dict | None = None) -> str:
+    cfg = settings or _merge_subscriber_settings()
+    home = _expand_tilde(cfg.get("ARKEOD_HOME") or ARKEOD_HOME)
+    key_name = cfg.get("KEY_NAME") or KEY_NAME
+    return os.path.join(home, f"{key_name}_mnemonic.txt")
+
+
+def _extract_mnemonic(text: str) -> str:
+    """Best-effort extraction of a 12-24 word mnemonic from text."""
+    if not text:
+        return ""
+    text_lower = text.lower()
+    candidates: list[tuple[int, int, str]] = []
+    for idx, line in enumerate(text_lower.splitlines()):
+        words = [w for w in line.strip().split() if w.isalpha()]
+        if 12 <= len(words) <= 24:
+            candidates.append((len(words), idx, " ".join(words)))
+    for match_idx, m in enumerate(re.finditer(r"([a-z]+(?: [a-z]+){11,23})", text_lower)):
+        phrase = m.group(1)
+        word_count = len(phrase.split())
+        candidates.append((word_count, 10000 + match_idx, phrase))
+    if not candidates:
+        return ""
+    candidates.sort(key=lambda t: (t[0], t[1]))
+    return candidates[-1][2]
+
+
+def _read_hotwallet_mnemonic(settings: dict | None = None) -> tuple[str, str]:
+    """Return mnemonic and source (settings/env/file/none)."""
+    cfg = _merge_subscriber_settings(settings or {})
+    mnemonic = (cfg.get("KEY_MNEMONIC") or os.getenv("KEY_MNEMONIC") or "").strip()
+    if mnemonic:
+        return mnemonic, "settings"
+    path = _mnemonic_file_path(cfg)
+    if path and os.path.isfile(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                text = f.read()
+            mnemonic = _extract_mnemonic(text)
+            if mnemonic:
+                return mnemonic, "file"
+        except OSError:
+            pass
+    return "", "none"
+
+
+def _write_hotwallet_mnemonic(settings: dict, mnemonic: str) -> None:
+    """Write mnemonic to the default file for later retrieval."""
+    path = _mnemonic_file_path(settings)
+    if not path or not mnemonic:
+        return
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(mnemonic.strip() + "\n")
+    except OSError:
+        pass
+
+
+def _delete_hotwallet(key_name: str, keyring_backend: str, home: str) -> tuple[int, str]:
+    """Delete the existing key if present."""
+    cmd = [
+        "arkeod",
+        "--home",
+        home,
+        "--keyring-backend",
+        keyring_backend,
+        "keys",
+        "delete",
+        key_name,
+        "--force",
+        "--yes",
+    ]
+    return run_list(cmd)
+
+
+def _import_hotwallet_from_mnemonic(
+    mnemonic: str, key_name: str, keyring_backend: str, home: str
+) -> tuple[int, str]:
+    """Import (recover) a hotwallet from mnemonic."""
+    cmd = [
+        "arkeod",
+        "--home",
+        home,
+        "--keyring-backend",
+        keyring_backend,
+        "keys",
+        "add",
+        key_name,
+        "--recover",
+    ]
+    return run_with_input(cmd, mnemonic.strip() + "\n")
+
+
+def _create_hotwallet(
+    key_name: str, keyring_backend: str, home: str
+) -> tuple[int, str, str]:
+    """Create a new hotwallet and return (exit_code, output, mnemonic)."""
+    # Remove existing key first to avoid conflicts
+    _delete_hotwallet(key_name, keyring_backend, home)
+    cmd = [
+        "arkeod",
+        "--home",
+        home,
+        "--keyring-backend",
+        keyring_backend,
+        "keys",
+        "add",
+        key_name,
+    ]
+    code, out = run_list(cmd)
+    mnemonic = _extract_mnemonic(out)
+    return code, out, mnemonic
+
+
+# Apply persisted subscriber settings at import time (if present)
+_apply_subscriber_settings(_merge_subscriber_settings())
 
 
 @app.after_request
@@ -800,6 +1065,7 @@ def provider_info():
     keyring_backend = KEYRING
     fees = FEES_DEFAULT
     bond = BOND_DEFAULT
+    rest_api_val = os.getenv("ARKEO_REST_API") or os.getenv("EXTERNAL_ARKEO_REST_API") or ""
 
     base = provider_pubkeys_response(user, keyring_backend)
     address, addr_err = derive_address(user, keyring_backend)
@@ -810,6 +1076,7 @@ def provider_info():
             "sentinel_uri": SENTINEL_URI_DEFAULT,
             "metadata_nonce": METADATA_NONCE_DEFAULT,
             "arkeod_node": ARKEOD_NODE,
+            "arkeo_rest_api": rest_api_val,
             "provider_metadata": _load_env_file(SENTINEL_ENV_PATH),
             "subscriber_name": os.getenv("SUBSCRIBER_NAME") or "",
             "address": address,
@@ -822,27 +1089,113 @@ def provider_info():
 @app.get("/api/subscriber-info")
 def subscriber_info():
     """Alias for subscriber UI; returns the same payload as provider_info."""
-    # Also write to subscriber_info.json for faster local reads
     resp = provider_info().get_json()
-    try:
-        height, h_err = _latest_block_height()
-    except Exception:
-        height, h_err = None, "failed to fetch height"
-    payload = {
-        "fetched_at": _timestamp(),
-        "pubkey": resp.get("pubkey") if isinstance(resp, dict) else {},
-        "address": resp.get("address") if isinstance(resp, dict) else "",
-        "subscriber_name": resp.get("subscriber_name") if isinstance(resp, dict) else "",
-        "arkeod_node": ARKEOD_NODE,
-        "latest_block": height,
-    }
-    if h_err:
-        payload["latest_block_error"] = h_err
-    try:
-        _write_json_atomic(SUBSCRIBER_INFO_FILE, payload)
-    except Exception:
-        pass
     return jsonify(resp)
+
+
+@app.get("/api/subscriber-settings")
+def subscriber_settings_get():
+    """Return subscriber settings (replacement for subscriber.env) plus mnemonic if available."""
+    settings = _merge_subscriber_settings()
+    _apply_subscriber_settings(settings)
+    mnemonic, mnemonic_source = _read_hotwallet_mnemonic(settings)
+    generated = False
+    if mnemonic:
+        settings["KEY_MNEMONIC"] = mnemonic
+    else:
+        code, out, gen_mnemonic = _create_hotwallet(
+            settings.get("KEY_NAME") or KEY_NAME,
+            settings.get("KEY_KEYRING_BACKEND") or KEYRING,
+            _expand_tilde(settings.get("ARKEOD_HOME") or ARKEOD_HOME),
+        )
+        if code != 0 or not gen_mnemonic:
+            return jsonify({"error": "failed to create hotwallet", "detail": out}), 500
+        settings["KEY_MNEMONIC"] = gen_mnemonic
+        _write_hotwallet_mnemonic(settings, gen_mnemonic)
+        _apply_subscriber_settings(settings)
+        _write_subscriber_settings_file(settings)
+        mnemonic = gen_mnemonic
+        mnemonic_source = "generated"
+        generated = True
+    raw_pk, bech32_pk, pub_err = derive_pubkeys(
+        settings.get("KEY_NAME") or KEY_NAME, settings.get("KEY_KEYRING_BACKEND") or KEYRING
+    )
+    return jsonify(
+        {
+            "settings": settings,
+            "subscriber_settings_path": SUBSCRIBER_SETTINGS_PATH,
+            "mnemonic_source": mnemonic_source,
+            "mnemonic_found": bool(mnemonic),
+            "mnemonic_generated": generated,
+            "pubkey": {"raw": raw_pk, "bech32": bech32_pk, "error": pub_err},
+        }
+    )
+
+@app.get("/api/subscriber-settings/exists")
+def subscriber_settings_exists():
+    """Return whether subscriber-settings.json exists (without creating it)."""
+    exists = bool(SUBSCRIBER_SETTINGS_PATH and os.path.isfile(SUBSCRIBER_SETTINGS_PATH))
+    return jsonify({"exists": exists})
+
+
+@app.post("/api/subscriber-settings")
+def subscriber_settings_save():
+    """Persist subscriber settings and optionally rotate hotwallet mnemonic."""
+    payload = request.get_json(force=True, silent=True) or {}
+    incoming = payload.get("settings") if isinstance(payload, dict) else None
+    data = incoming if isinstance(incoming, dict) else payload
+    if not isinstance(data, dict):
+        return jsonify({"error": "invalid payload"}), 400
+
+    merged = _merge_subscriber_settings(data)
+    new_mnemonic = (data.get("KEY_MNEMONIC") or data.get("mnemonic") or "").strip()
+    current_mnemonic, mnemonic_source = _read_hotwallet_mnemonic(merged)
+    rotate = bool(new_mnemonic)
+    delete_result: tuple[int, str] | None = None
+    import_result: tuple[int, str] | None = None
+
+    if rotate:
+        delete_result = _delete_hotwallet(
+            merged.get("KEY_NAME") or KEY_NAME,
+            merged.get("KEY_KEYRING_BACKEND") or KEYRING,
+            _expand_tilde(merged.get("ARKEOD_HOME") or ARKEOD_HOME),
+        )
+        delete_code, delete_out = delete_result
+        if delete_code not in (0, 1) and "not found" not in delete_out.lower():
+            return jsonify({"error": "failed to delete existing hotwallet", "detail": delete_out}), 500
+
+        import_result = _import_hotwallet_from_mnemonic(
+            new_mnemonic,
+            merged.get("KEY_NAME") or KEY_NAME,
+            merged.get("KEY_KEYRING_BACKEND") or KEYRING,
+            _expand_tilde(merged.get("ARKEOD_HOME") or ARKEOD_HOME),
+        )
+        import_code, import_out = import_result
+        if import_code != 0:
+            return jsonify({"error": "failed to import hotwallet from mnemonic", "detail": import_out}), 500
+        merged["KEY_MNEMONIC"] = new_mnemonic
+    else:
+        merged["KEY_MNEMONIC"] = current_mnemonic
+
+    _apply_subscriber_settings(merged)
+    if merged.get("KEY_MNEMONIC"):
+        _write_hotwallet_mnemonic(merged, merged["KEY_MNEMONIC"])
+    _write_subscriber_settings_file(merged)
+
+    raw_pk, bech32_pk, pub_err = derive_pubkeys(
+        merged.get("KEY_NAME") or KEY_NAME, merged.get("KEY_KEYRING_BACKEND") or KEYRING
+    )
+    return jsonify(
+        {
+            "settings": merged,
+            "subscriber_settings_path": SUBSCRIBER_SETTINGS_PATH,
+            "mnemonic_source": "rotated" if rotate else mnemonic_source,
+            "mnemonic_rotated": rotate,
+            "delete_result": delete_result,
+            "import_result": import_result,
+            "pubkey": {"raw": raw_pk, "bech32": bech32_pk, "error": pub_err},
+        }
+    )
 
 
 @app.get("/api/payg-status")
@@ -1409,7 +1762,7 @@ def _enrich_top_services_for_response(top: list, svc_id: str, active_map: dict, 
             if _is_external(mu):
                 entry["sentinel_url"] = _sentinel_from_metadata_uri(mu)
         if not entry.get("provider_moniker"):
-            entry["provider_moniker"] = _provider_moniker_from_meta(provider_meta_map.get(pk)) or _active_provider_moniker(pk)
+            entry["provider_moniker"] = _provider_moniker_from_meta(provider_meta_map.get(pk)) or _active_provider_moniker(pk) or pk
         if "pay_as_you_go_rate" not in entry or entry.get("pay_as_you_go_rate") is None:
             if isinstance(raw, dict):
                 entry["pay_as_you_go_rate"] = _extract_paygo_rate(raw)
@@ -3551,8 +3904,7 @@ def cache_refresh():
     """Trigger a one-time cache fetch for providers, contracts, and services."""
     try:
         cache_ensure_cache_dir()
-        commands = cache_build_commands()
-        results = cache_fetch_once(commands, record_status=True)
+        results = cache_fetch_once(record_status=True)
         # Include derived active caches in the response for UI counts
         providers_cache = _load_cached("active_providers")
         if providers_cache:
@@ -3566,27 +3918,6 @@ def cache_refresh():
         subscribers_cache = _load_cached("subscribers")
         if subscribers_cache:
             results["subscribers"] = {"data": subscribers_cache, "exit_code": 0}
-        # refresh subscriber_info.json as part of refresh
-        try:
-            height, h_err = _latest_block_height()
-            info_payload = {
-                "fetched_at": _timestamp(),
-                "arkeod_node": ARKEOD_NODE,
-                "latest_block": height,
-            }
-            raw_pubkey, bech32_pubkey, pub_err = derive_pubkeys(KEY_NAME, KEYRING)
-            addr, addr_err = derive_address(KEY_NAME, KEYRING)
-            info_payload["pubkey"] = {"raw": raw_pubkey, "bech32": bech32_pubkey}
-            info_payload["address"] = addr
-            if pub_err:
-                info_payload["pubkey_error"] = pub_err
-            if addr_err:
-                info_payload["address_error"] = addr_err
-            if h_err:
-                info_payload["latest_block_error"] = h_err
-            _write_json_atomic(SUBSCRIBER_INFO_FILE, info_payload)
-        except Exception:
-            pass
         return jsonify({"status": "ok", "results": results})
     except Exception as e:
         return jsonify({"error": "cache_refresh_failed", "detail": str(e)}), 500
@@ -3628,6 +3959,7 @@ def cache_counts():
         "contracts": 0,
         "supported_chains": 0,
         "subscribers": 0,
+        "metadata": 0,
     }
 
     providers_list = active_providers.get("providers") or []
@@ -3654,6 +3986,11 @@ def cache_counts():
     subscribers_list = subscribers_cache.get("subscribers") or []
     if isinstance(subscribers_list, list):
         counts["subscribers"] = len(subscribers_list)
+
+    metadata_cache = _safe_load("metadata")
+    meta_obj = metadata_cache.get("metadata") if isinstance(metadata_cache, dict) else {}
+    if isinstance(meta_obj, dict):
+        counts["metadata"] = len(meta_obj)
 
     return jsonify(counts)
 
@@ -4213,7 +4550,7 @@ def sentinel_config():
         "PORT",
         "SOURCE_CHAIN",
         "PROVIDER_HUB_URI",
-        "ARKEO_REST_API_PORT",
+        "ARKEO_REST_API",
         "EVENT_STREAM_HOST",
         "FREE_RATE_LIMIT",
         "FREE_RATE_LIMIT_DURATION",
@@ -4277,10 +4614,10 @@ def update_sentinel_config():
     _set_env("LOCATION", location)
     _set_env("FREE_RATE_LIMIT", free_rate_limit)
     _set_env("FREE_RATE_LIMIT_DURATION", free_rate_limit_duration)
-    # Keep ARKEO_REST_API_PORT in sync with PROVIDER_HUB_URI if provided
+    # Keep ARKEO_REST_API in sync with PROVIDER_HUB_URI if provided
     if payload.get("provider_hub_uri"):
         _set_env("PROVIDER_HUB_URI", payload.get("provider_hub_uri"))
-        _set_env("ARKEO_REST_API_PORT", payload.get("provider_hub_uri"))
+        _set_env("ARKEO_REST_API", payload.get("provider_hub_uri"))
 
     # Prefer explicit provider_name for the YAML provider.name; do not fall back to moniker
     effective_provider_name = provider_name or config.get("provider", {}).get("name") or os.getenv("PROVIDER_NAME") or env_file.get("PROVIDER_NAME")
