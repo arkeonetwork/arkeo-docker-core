@@ -136,7 +136,8 @@
                     <div class="hint">The URI and port for the sentinel service for your provider.</div>
                 </td>
                 <td class="value">
-                    <input type="text" id="sentinelUri" />
+                    <div id="sentinelUriDisplay" class="muted"></div>
+                    <input type="hidden" id="sentinelUri" />
                 </td>
             </tr>
             <tr>
@@ -464,6 +465,14 @@ window.fetch = (url, options = {}) =>
         return `${cleaned}/metadata.json`;
     }
 
+    function setSentinelUriDisplay(val) {
+        const normalized = normalizeSentinelUri(val || "");
+        const hidden = document.getElementById("sentinelUri");
+        const label = document.getElementById("sentinelUriDisplay");
+        if (hidden) hidden.value = normalized;
+        if (label) label.textContent = normalized || "(not set)";
+    }
+
     function pullPendingEdit() {
         try {
             const raw = localStorage.getItem("providerServiceEdit");
@@ -582,8 +591,7 @@ window.fetch = (url, options = {}) =>
         }
         const rawSentinelUri = document.getElementById("sentinelUri").value.trim();
         const sentinelUriNormalized = normalizeSentinelUri(rawSentinelUri);
-        const sInput = document.getElementById("sentinelUri");
-        if (sInput) sInput.value = sentinelUriNormalized;
+        setSentinelUriDisplay(sentinelUriNormalized);
         const payload = {
             service: document.getElementById("bondService").value.trim(),
             bond: bondAmount,
@@ -749,10 +757,10 @@ window.fetch = (url, options = {}) =>
             document.getElementById("walletKey").textContent = data.user;
         }
         if (data.sentinel_uri && !editingExisting) {
-            document.getElementById("sentinelUri").value = data.sentinel_uri;
+            setSentinelUriDisplay(data.sentinel_uri);
         }
         if (data.inputs) {
-            if (data.inputs.sentinel_uri && !editingExisting) document.getElementById("sentinelUri").value = data.inputs.sentinel_uri;
+            if (data.inputs.sentinel_uri && !editingExisting) setSentinelUriDisplay(data.inputs.sentinel_uri);
             if (data.inputs.metadata_nonce && !nonceLockedFromEdit) {
                 document.getElementById("metadataNonceHidden").value = data.inputs.metadata_nonce;
                 document.getElementById("metadataNonceLabel").textContent = data.inputs.metadata_nonce;
@@ -805,12 +813,11 @@ window.fetch = (url, options = {}) =>
             }
             const normalizedFromSettings = normalizeSentinelUri(sentinelFromSettings);
             if (normalizedFromSettings) {
-                const sInput = document.getElementById("sentinelUri");
-                if (sInput) sInput.value = normalizedFromSettings;
+                setSentinelUriDisplay(normalizedFromSettings);
                 setAdminHost(normalizedFromSettings);
             } else if (data.sentinel_uri) {
                 const normalized = normalizeSentinelUri(data.sentinel_uri);
-                document.getElementById("sentinelUri").value = normalized;
+                setSentinelUriDisplay(normalized);
                 setAdminHost(normalized);
             }
         // Prefill location from export/env if available
@@ -927,7 +934,7 @@ window.fetch = (url, options = {}) =>
             const currentBond = document.getElementById("currentBondAmountLabel");
             if (currentBond) currentBond.textContent = formatBondDisplay(svc.bond);
         }
-        if (svc.metadata_uri) document.getElementById("sentinelUri").value = normalizeSentinelUri(svc.metadata_uri);
+        if (svc.metadata_uri) setSentinelUriDisplay(normalizeSentinelUri(svc.metadata_uri));
         if (svc.metadata_nonce) {
             document.getElementById("metadataNonceHidden").value = svc.metadata_nonce;
             document.getElementById("metadataNonceLabel").textContent = svc.metadata_nonce;
@@ -966,6 +973,10 @@ window.fetch = (url, options = {}) =>
         const setVal = (id, val) => {
             const el = document.getElementById(id);
             if (!el) return;
+            if (id === "sentinelUri") {
+                setSentinelUriDisplay(val);
+                return;
+            }
             if (el.value === "" || el.value === el.placeholder) {
                 el.value = val;
             }

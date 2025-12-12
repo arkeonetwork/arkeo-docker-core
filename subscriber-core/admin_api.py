@@ -35,6 +35,7 @@ CACHE_DIR = os.getenv("CACHE_DIR", "/app/cache")
 LISTENERS_FILE = os.path.join(CACHE_DIR, "listeners.json")
 LISTENER_PORT_START = int(os.getenv("LISTENER_PORT_START", "62001"))
 LISTENER_PORT_END = int(os.getenv("LISTENER_PORT_END", "62100"))
+LISTENER_PORT_CONFIG = os.path.join(CACHE_DIR, "listener_port_config.json")
 ACTIVE_SERVICE_TYPES_FILE = os.path.join(CACHE_DIR, "active_service_types.json")
 SUBSCRIBER_INFO_FILE = os.path.join(CACHE_DIR, "subscriber_info.json")
 LOG_DIR = os.path.join(CACHE_DIR, "logs")
@@ -48,6 +49,57 @@ ADMIN_UI_ORIGIN = os.getenv("ADMIN_UI_ORIGIN") or "http://localhost:8079"
 ADMIN_SESSIONS: dict[str, float] = {}
 _LISTENER_SERVERS: dict[int, dict] = {}
 _LISTENER_LOCK = threading.Lock()
+_PORT_FLOOR = None
+
+
+def _load_port_floor() -> int:
+    """Return the current starting port (persisted), falling back to env default."""
+    global _PORT_FLOOR
+    if _PORT_FLOOR is not None:
+        return _PORT_FLOOR
+    # 1) subscriber-settings.json
+    try:
+        saved = _load_subscriber_settings_file()
+        if isinstance(saved, dict) and "LISTENER_PORT_START" in saved:
+            val = int(saved.get("LISTENER_PORT_START"))
+            if LISTENER_PORT_START <= val <= LISTENER_PORT_END:
+                _PORT_FLOOR = val
+                return _PORT_FLOOR
+    except Exception:
+        pass
+    # 2) legacy listener_port_config.json (backward compatibility)
+    try:
+        with open(LISTENER_PORT_CONFIG, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        val = int(data.get("start_port"))
+        if LISTENER_PORT_START <= val <= LISTENER_PORT_END:
+            _PORT_FLOOR = val
+            return _PORT_FLOOR
+    except Exception:
+        pass
+    # 3) env/default
+    _PORT_FLOOR = LISTENER_PORT_START
+    return _PORT_FLOOR
+
+
+def _save_port_floor(val: int):
+    """Persist the starting port selection."""
+    global _PORT_FLOOR
+    _PORT_FLOOR = val
+    # write to subscriber-settings.json
+    try:
+        settings = _merge_subscriber_settings()
+        settings["LISTENER_PORT_START"] = val
+        _write_subscriber_settings_file(settings)
+    except Exception:
+        pass
+    # legacy file (best effort)
+    try:
+        Path(CACHE_DIR).mkdir(parents=True, exist_ok=True)
+        with open(LISTENER_PORT_CONFIG, "w", encoding="utf-8") as f:
+            json.dump({"start_port": val}, f, indent=2)
+    except Exception:
+        pass
 
 def _service_slug_for_id(service_id: str) -> str:
     """Return the service name/slug for a given service_id, if known."""
@@ -2380,7 +2432,8 @@ def _ensure_listener_runtime(listener: dict, previous_port: int | None = None, p
 
 
 def _next_available_port(used: set[int]) -> int | None:
-    for p in range(LISTENER_PORT_START, LISTENER_PORT_END + 1):
+    floor = _load_port_floor()
+    for p in range(floor, LISTENER_PORT_END + 1):
         if p not in used:
             return p
     return None
@@ -2426,6 +2479,35 @@ def _collect_used_ports(listeners: list, skip_id: str | None = None) -> set[int]
         except (TypeError, ValueError):
             continue
     return used
+
+
+@app.post("/api/listener-port-start")
+def set_listener_port_start():
+    """Set the minimum port for listeners (must be within allowed range)."""
+    payload = request.get_json(silent=True) or {}
+    try:
+        start_port = int(payload.get("start_port"))
+    except Exception:
+        return jsonify({"error": "invalid_start_port"}), 400
+    if start_port < LISTENER_PORT_START or start_port > LISTENER_PORT_END:
+        return jsonify({"error": f"start_port must be between {LISTENER_PORT_START} and {LISTENER_PORT_END}"}), 400
+    data = _ensure_listeners_file()
+    listeners = data.get("listeners") if isinstance(data, dict) else []
+    listeners = listeners if isinstance(listeners, list) else []
+    for l in listeners:
+        try:
+            pval = int(l.get("port"))
+            if pval < start_port:
+                return jsonify({"error": "start_port_below_existing", "detail": f"listener port {pval} is below requested start_port"}), 400
+        except Exception:
+            continue
+    _save_port_floor(start_port)
+    used = _collect_used_ports(listeners)
+    return jsonify({
+        "port_floor": start_port,
+        "port_range": [start_port, LISTENER_PORT_END],
+        "next_port": _next_available_port(used),
+    })
 
 
 def _bootstrap_listeners_from_cache():
@@ -4453,8 +4535,9 @@ def _sanitize_listener_payload(payload: dict, existing_ports: set[int], current_
             port = int(port_val)
         except (TypeError, ValueError):
             return None, "port must be an integer"
-        if port < LISTENER_PORT_START or port > LISTENER_PORT_END:
-            return None, f"port must be between {LISTENER_PORT_START} and {LISTENER_PORT_END}"
+        floor = _load_port_floor()
+        if port < floor or port > LISTENER_PORT_END:
+            return None, f"port must be between {floor} and {LISTENER_PORT_END}"
         if port in existing_ports:
             return None, f"port {port} already in use"
     return {
@@ -4479,10 +4562,12 @@ def get_listeners():
     listeners = listeners if isinstance(listeners, list) else []
     used_ports = _collect_used_ports(listeners)
     next_port = _next_available_port(used_ports)
+    floor = _load_port_floor()
     return jsonify({
         "listeners": [_enrich_listener_for_response(l) for l in listeners],
-        "port_range": [LISTENER_PORT_START, LISTENER_PORT_END],
+        "port_range": [floor, LISTENER_PORT_END],
         "next_port": next_port,
+        "port_floor": floor,
     })
 
 
@@ -4494,6 +4579,7 @@ def create_listener():
     if not isinstance(listeners, list):
         listeners = []
     used_ports = _collect_used_ports(listeners)
+    floor = _load_port_floor()
     clean, err = _sanitize_listener_payload(payload, used_ports)
     if err:
         return jsonify({"error": err}), 400

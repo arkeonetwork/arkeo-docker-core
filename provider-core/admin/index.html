@@ -556,13 +556,21 @@ let earningsChartCache = {};
 
             const sentinelServices = [];
             const cfg = lastSentinelConfig;
+            let sentinelHostDisplay = "(unknown)";
+            const envFile = (cfg && cfg.env_file) || {};
+            const sentinelNodeVal = envFile.SENTINEL_NODE || "";
+            const sentinelPortVal = envFile.SENTINEL_PORT || "3636";
+            if (sentinelNodeVal) {
+                sentinelHostDisplay = `${String(sentinelNodeVal).replace(/\/+$/, "")}:${sentinelPortVal}`;
+            }
             if (cfg && cfg.config && Array.isArray(cfg.config.services)) {
                 cfg.config.services.forEach(ss => {
                     if (!ss || typeof ss !== "object") return;
                     const sid = ss.id !== undefined && ss.id !== null ? String(ss.id) : "";
                     const sname = ss.name || ss.service;
-                    if (sid) sentinelServices.push({ id: sid, name: sname });
-                    else if (sname) sentinelServices.push({ name: sname });
+                    const rpcUrl = ss.rpc_url || ss.rpcUrl || "";
+                    if (sid) sentinelServices.push({ id: sid, name: sname, rpc_url: rpcUrl });
+                    else if (sname) sentinelServices.push({ name: sname, rpc_url: rpcUrl });
                 });
             }
 
@@ -607,12 +615,19 @@ let earningsChartCache = {};
                         statusStr === "true";
                     const statusLabel = isActive ? "Active" : "Inactive";
                     const statusClass = isActive ? "ok" : "err";
-                    const inSentinel = sentinelServices.some(ss => {
+                    const sentinelMatch = sentinelServices.find(ss => {
                         if (!ss) return false;
                         const idMatch = rawId && (ss.id === rawId || String(ss.id) === String(rawId));
                         const nameMatch = resolvedName && ss.name && String(ss.name) === String(resolvedName);
                         return idMatch || nameMatch;
                     });
+                    const inSentinel = !!sentinelMatch;
+                    const rpcUrlDisplay = sentinelMatch && sentinelMatch.rpc_url ? sentinelMatch.rpc_url : "(not set)";
+                    const metadataUri = (s && (s.metadata_uri || s.metadataUri || s.metadata_url || s.metadataUrl)) || "";
+                    let sentinelDisplay = sentinelHostDisplay;
+                    if (metadataUri) {
+                        sentinelDisplay = metadataUri;
+                    }
                     const sentinelBadge = inSentinel
                         ? '<span class="status-pill status-ok">In Sentinel</span>'
                         : '<span class="status-pill status-err">Not in Sentinel</span>';
@@ -621,7 +636,9 @@ let earningsChartCache = {};
                         <div class="service-row full-width service-row-padded">
                             <div class="service-name full-width">
                                 <div class="full-width"><strong>${resolvedDisplay}</strong></div>
-                                ${subtitle ? `<div class="full-width muted normal-weight">${subtitle}</div>` : ""}
+                                ${subtitle ? `<div class="full-width svc-subtext">${subtitle}</div>` : ""}
+                                <div class="full-width svc-subtext">${sentinelDisplay}</div>
+                                <div class="full-width svc-subtext">${rpcUrlDisplay}</div>
                                 <div class="full-width mt-4">
                                     <span class="status-pill ${statusClass}">${statusLabel}</span>
                                     ${sentinelBadge}

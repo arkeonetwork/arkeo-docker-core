@@ -87,6 +87,12 @@
         </div>
         <div class="text-right">
             <div class="muted" id="listenerRange">Ports 62001-62100</div>
+            <div class="muted small" style="margin-top:4px;">
+                Start port:
+                <select id="portStartSelect" class="select" style="width:auto; padding:2px 6px; min-width:90px;" onchange="handlePortStartChange()">
+                    <option>62001</option>
+                </select>
+            </div>
             <div class="muted small">Next available port: <span id="nextPortValue">–</span></div>
         </div>
     </div>
@@ -201,6 +207,8 @@
     const apiUrl = (path) => `${API_BASE}${path}`;
     let adminPasswordEnabled = false;
     let adminSessionAuthed = false;
+    let portRangeGlobal = [62001, 62100];
+    let portFloorGlobal = 62001;
 
     function requirePasswordGate() {
         sessionStorage.removeItem("adminAuthed");
@@ -827,10 +835,19 @@
             const nextPort = data.next_port || "n/a";
             const npEl = document.getElementById("nextPortValue");
             if (npEl) npEl.textContent = nextPort;
+            if (Array.isArray(data.port_range) && data.port_range.length === 2) {
+                portRangeGlobal = data.port_range;
+            }
+            if (data.port_floor) {
+                portFloorGlobal = data.port_floor;
+            } else if (Array.isArray(portRangeGlobal) && portRangeGlobal.length === 2) {
+                portFloorGlobal = portRangeGlobal[0];
+            }
             const rangeEl = document.getElementById("listenerRange");
             if (rangeEl && Array.isArray(data.port_range) && data.port_range.length === 2) {
                 rangeEl.textContent = `Ports ${data.port_range[0]}-${data.port_range[1]}`;
             }
+            populatePortStartSelect();
             renderListenersTable();
             renderListenerLogs();
             if (!serviceTypesCache.length) {
@@ -838,6 +855,50 @@
             }
         } catch (err) {
             renderListenersTable(`Failed to load listeners: ${err}`);
+        }
+    }
+
+    function populatePortStartSelect() {
+        const sel = document.getElementById("portStartSelect");
+        if (!sel) return;
+        const [min, max] = Array.isArray(portRangeGlobal) && portRangeGlobal.length === 2 ? portRangeGlobal : [62001, 62100];
+        const floor = portFloorGlobal || min;
+        let opts = "";
+        for (let p = min; p <= max; p++) {
+            opts += `<option value="${p}" ${p === floor ? "selected" : ""}>${p}</option>`;
+        }
+        sel.innerHTML = opts;
+        sel.value = String(floor);
+    }
+
+    async function handlePortStartChange() {
+        const sel = document.getElementById("portStartSelect");
+        if (!sel) return;
+        const val = parseInt(sel.value, 10);
+        if (Number.isNaN(val)) return;
+        sel.disabled = true;
+        try {
+            const res = await fetch(apiUrl("/api/listener-port-start"), {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ start_port: val }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || (data && data.error)) {
+                throw new Error((data && (data.detail || data.error)) || res.statusText || res.status);
+            }
+            if (data.port_floor) {
+                portFloorGlobal = data.port_floor;
+            }
+            if (Array.isArray(data.port_range) && data.port_range.length === 2) {
+                portRangeGlobal = data.port_range;
+            }
+            await loadListeners();
+        } catch (e) {
+            alert(`Failed to set start port: ${e}`);
+            populatePortStartSelect();
+        } finally {
+            sel.disabled = false;
         }
     }
 
