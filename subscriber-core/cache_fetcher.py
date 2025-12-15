@@ -766,11 +766,17 @@ def _load_listeners() -> Dict[str, Any]:
 
 def _write_listeners(payload: Dict[str, Any]) -> None:
     path = os.path.join(CACHE_DIR, "listeners.json")
-    tmp_path = f"{path}.tmp"
+    tmp_path = f"{path}.tmp.{os.getpid()}.{int(time.time() * 1000)}"
     try:
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=True, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp_path, path)
+        try:
+            print(f"[cache] wrote listeners.json (tmp={tmp_path})", flush=True)
+        except Exception:
+            pass
     except OSError:
         try:
             if os.path.exists(tmp_path):

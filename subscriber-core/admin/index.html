@@ -88,12 +88,26 @@
                         </svg>
                     </span>
                 </div>
+                <div class="wallet-actions-inline">
+                    <button class="wallet-action-btn" onclick="openSendUsdcModal(event)" title="Send USDC to another chain/address" aria-label="Send USDC">Send USDC</button>
+                    <button class="wallet-action-btn ghost" onclick="openRescueGasModal(event)" title="Rescue stuck Axelar transfer" aria-label="Rescue Axelar transfer">Rescue</button>
+                    <button class="wallet-action-btn ghost" onclick="openGmpStatusModal(event)" title="Check Axelar GMP status" aria-label="Check GMP status">Check GMP</button>
+                </div>
             </div>
             <div class="wallet-card">
                 <img src="images/osmosis/info/logo.png" alt="Osmosis" class="wallet-icon">
                 <div class="wallet-block-badge">Block: <span id="walletOsmoBlockBadge">—</span></div>
                 <div class="wallet-title">Osmosis</div>
-                <div class="wallet-meta">Balance: <span id="walletOsmoBalance">—</span></div>
+                <div class="wallet-meta">OSMO: <span id="walletOsmoBalance">—</span>
+                    <span class="info-icon" title="Sending tokens on Osmosis requires a small amount of OSMO for gas." onclick="showOsmoGasInfo()" aria-label="Gas info">
+                        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                            <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/>
+                            <path d="M12 7.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z" fill="currentColor"/>
+                            <path d="M11.25 10.5h1.5v6h-1.5z" fill="currentColor"/>
+                        </svg>
+                    </span>
+                </div>
+                <div class="wallet-meta">USDC: <span id="walletOsmoUsdcBalance">—</span></div>
                 <div class="wallet-meta wallet-copy">
                     <span>Address: <span id="walletOsmoAddress">—</span></span>
                     <span onclick="copyOsmoAddress()" title="Copy address" aria-label="Copy Osmosis address">
@@ -101,6 +115,9 @@
                             <path d="M8 5.00005C7.01165 5.00082 6.49359 5.01338 6.09202 5.21799C5.71569 5.40973 5.40973 5.71569 5.21799 6.09202C5 6.51984 5 7.07989 5 8.2V17.8C5 18.9201 5 19.4802 5.21799 19.908C5.40973 20.2843 5.71569 20.5903 6.09202 20.782C6.51984 21 7.07989 21 8.2 21H15.8C16.9201 21 17.4802 21 17.908 20.782C18.2843 20.5903 18.5903 20.2843 18.782 19.908C19 19.4802 19 18.9201 19 17.8V8.2C19 7.07989 19 6.51984 18.782 6.09202C18.5903 5.71569 18.2843 5.40973 17.908 5.21799C17.5064 5.01338 16.9884 5.00082 16 5.00005M8 5.00005V7H16V5.00005M8 5.00005V4.70711C8 4.25435 8.17986 3.82014 8.5 3.5C8.82014 3.17986 9.25435 3 9.70711 3H14.2929C14.7456 3 15.1799 3.17986 15.5 3.5C15.8201 3.82014 16 4.25435 16 4.70711V5.00005M12 11V17M12 11L14 13M12 11L10 13" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
                         </svg>
                     </span>
+                </div>
+                <div class="wallet-actions-inline">
+                    <button class="wallet-action-btn" onclick="openConvertUsdcModal(event)" title="Convert USDC to ARKEO and IBC to Arkeo" aria-label="Convert USDC to ARKEO">Convert USDC → ARKEO</button>
                 </div>
             </div>
             <div class="wallet-card">
@@ -124,6 +141,9 @@
                         </svg>
                     </span>
                 </div>
+            </div>
+            <div class="wallet-actions-row">
+                <button class="wallet-log-btn" onclick="viewHotwalletLogs(event)" title="View hot wallet logs" aria-label="View hot wallet logs">Logs</button>
             </div>
         </div>
     </div>
@@ -228,6 +248,123 @@
     </div>
 </div>
 
+<div id="sendUsdcModal" class="overlay hidden">
+    <div class="overlay-card modal-card">
+        <h3>Send USDC</h3>
+        <form onsubmit="submitSendUsdc(event)">
+            <div class="form-body">
+                <div class="form-row send-amount-row">
+                    <div class="field-block">
+                        <label for="sendUsdcAmount">Amount (USDC)</label>
+                        <input type="number" id="sendUsdcAmount" min="0" step="0.000001" placeholder="0.000000" />
+                    </div>
+                    <div class="field-block">
+                        <div class="inline-header">Add Fees</div>
+                        <div class="fee-row">
+                            <label class="checkbox-inline">
+                                <input type="checkbox" id="sendUsdcAddFees" />
+                                <span>ETH gas</span>
+                            </label>
+                            <input type="number" id="sendUsdcGasAmount" min="0" step="0.001" value="0.010" aria-label="Axelar gas (ETH)" />
+                        </div>
+                    </div>
+                </div>
+                <div class="form-row send-log-row">
+                    <label for="sendUsdcLog">Status</label>
+                    <textarea id="sendUsdcLog" class="send-log" rows="10" readonly></textarea>
+                </div>
+            </div>
+            <div class="actions modal-actions">
+                <button type="button" class="btn-ghost" onclick="closeSendUsdcModal()">Close</button>
+                <button type="submit" class="primary" id="sendUsdcSubmitBtn">Send</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div id="rescueGasModal" class="overlay hidden">
+    <div class="overlay-card modal-card">
+        <h3>Rescue Axelar Transfer</h3>
+        <form onsubmit="submitRescueGas(event)">
+            <div class="form-body">
+                <div class="form-row">
+                    <label for="rescueTxHash">sendToken Tx Hash</label>
+                    <input type="text" id="rescueTxHash" placeholder="0x..." />
+                </div>
+                <div class="form-row">
+                    <label for="rescueGasAmount">Gas (ETH)</label>
+                    <input type="number" id="rescueGasAmount" min="0" step="0.001" value="0.010" />
+                </div>
+                <div class="form-row">
+                    <label for="rescueGasLog">Status</label>
+                    <textarea id="rescueGasLog" class="send-log" rows="8" readonly></textarea>
+                </div>
+            </div>
+            <div class="actions modal-actions">
+                <button type="button" class="btn-ghost" onclick="closeRescueGasModal()">Close</button>
+                <button type="submit" class="primary" id="rescueGasSubmitBtn">Top Up</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div id="convertUsdcModal" class="overlay hidden">
+    <div class="overlay-card modal-card">
+        <h3>Convert USDC → ARKEO</h3>
+        <form onsubmit="submitConvertUsdc(event)">
+            <div class="form-body">
+                <div class="form-row">
+                    <label for="convertUsdcAmount">Amount (USDC on Osmosis)</label>
+                    <input type="number" id="convertUsdcAmount" min="0" step="0.000001" placeholder="0.000000" />
+                </div>
+                <div class="form-row">
+                    <label for="convertUsdcLog">Status</label>
+                    <textarea id="convertUsdcLog" class="send-log" rows="10" readonly></textarea>
+                </div>
+            </div>
+            <div class="actions modal-actions">
+                <button type="button" class="btn-ghost" onclick="closeConvertUsdcModal()">Close</button>
+                <button type="submit" class="primary" id="convertUsdcSubmitBtn">Convert</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div id="gmpStatusModal" class="overlay hidden">
+    <div class="overlay-card modal-card">
+        <h3>Check GMP Status</h3>
+        <form onsubmit="submitGmpStatus(event)">
+            <div class="form-body">
+                <div class="form-row">
+                    <label for="gmpStatusTxHash">sendToken Tx Hash</label>
+                    <input type="text" id="gmpStatusTxHash" placeholder="0x..." />
+                </div>
+                <div class="form-row">
+                    <label>Squid (optional) Chain IDs</label>
+                    <div class="send-amount-row">
+                        <div class="field-block">
+                            <label for="gmpStatusFromChain">From Chain ID</label>
+                            <input type="text" id="gmpStatusFromChain" placeholder="1 (Ethereum mainnet)" />
+                        </div>
+                        <div class="field-block">
+                            <label for="gmpStatusToChain">To Chain ID</label>
+                            <input type="text" id="gmpStatusToChain" placeholder="(Squid ID for Osmosis)" />
+                        </div>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <label for="gmpStatusLog">Status</label>
+                    <textarea id="gmpStatusLog" class="send-log" rows="8" readonly></textarea>
+                </div>
+            </div>
+            <div class="actions modal-actions">
+                <button type="button" class="btn-ghost" onclick="closeGmpStatusModal()">Close</button>
+                <button type="submit" class="primary" id="gmpStatusSubmitBtn">Check</button>
+            </div>
+        </form>
+    </div>
+</div>
+
 <div id="adminPasswordGate" class="overlay overlay-strong hidden">
     <div class="overlay-card password-card">
         <div class="password-title">
@@ -273,6 +410,404 @@
     function showEthGasInfo() {
         const msg = "To send or move USDC from this wallet, you need a small amount of ETH to pay gas.";
         showResultModal("Gas Reminder", msg);
+    }
+
+    function showOsmoGasInfo() {
+        const msg = "To send or move tokens (including USDC) on Osmosis, you need a small amount of OSMO to pay gas.";
+        showResultModal("Gas Reminder", msg);
+    }
+
+    function parseNumber(text) {
+        if (!text) return NaN;
+        const num = parseFloat(String(text).replace(/[^\d.\-]/g, ""));
+        return num;
+    }
+
+    let sendUsdcPollHandle = null;
+    let sendUsdcStartUsdc = null;
+    let sendUsdcAmount = null;
+    let rescuePollHandle = null;
+
+    function clearSendUsdcPoll() {
+        if (sendUsdcPollHandle) {
+            clearInterval(sendUsdcPollHandle);
+            sendUsdcPollHandle = null;
+        }
+    }
+
+    function appendSendUsdcLog(line) {
+        const box = document.getElementById("sendUsdcLog");
+        if (!box) return;
+        const ts = new Date().toISOString().replace("T", " ").replace("Z", "");
+        box.value = `${box.value}${ts}  ${line}\n`;
+        box.scrollTop = box.scrollHeight;
+    }
+
+    async function openSendUsdcModal(evt) {
+        if (evt && evt.stopPropagation) evt.stopPropagation();
+        clearSendUsdcPoll();
+        sendUsdcStartUsdc = null;
+        sendUsdcAmount = null;
+        const modal = document.getElementById("sendUsdcModal");
+        const amtInput = document.getElementById("sendUsdcAmount");
+        const gasInput = document.getElementById("sendUsdcGasAmount");
+        const addFees = document.getElementById("sendUsdcAddFees");
+        const logBox = document.getElementById("sendUsdcLog");
+        if (logBox) logBox.value = "";
+        if (addFees) addFees.checked = false;
+            if (gasInput) {
+                const defGas = parseNumber(gasInput.value) || 0.003;
+                gasInput.value = defGas.toFixed(3);
+            }
+        if (modal) modal.classList.remove("hidden");
+        const balText = document.getElementById("walletEthUsdcBalance")?.textContent || "";
+        const avail = parseNumber(balText);
+        if (amtInput) {
+            amtInput.value = "";
+            amtInput.placeholder = isNaN(avail) ? "0.000000" : `Available: ${avail.toFixed(6)}`;
+            amtInput.focus();
+        }
+        appendSendUsdcLog("Ready to send USDC from ETH to Osmosis via Axelar.");
+    }
+
+    function closeSendUsdcModal() {
+        clearSendUsdcPoll();
+        const modal = document.getElementById("sendUsdcModal");
+        if (modal) modal.classList.add("hidden");
+    }
+
+    function clearRescuePoll() {
+        if (rescuePollHandle) {
+            clearInterval(rescuePollHandle);
+            rescuePollHandle = null;
+        }
+    }
+
+    function appendRescueLog(line) {
+        const box = document.getElementById("rescueGasLog");
+        if (!box) return;
+        const ts = new Date().toISOString().replace("T", " ").replace("Z", "");
+        box.value = `${box.value}${ts}  ${line}\n`;
+        box.scrollTop = box.scrollHeight;
+    }
+
+    function appendGmpLog(line) {
+        const box = document.getElementById("gmpStatusLog");
+        if (!box) return;
+        const ts = new Date().toISOString().replace("T", " ").replace("Z", "");
+        box.value = `${box.value}${ts}  ${line}\n`;
+        box.scrollTop = box.scrollHeight;
+    }
+
+    function appendConvertLog(line) {
+        const box = document.getElementById("convertUsdcLog");
+        if (!box) return;
+        const ts = new Date().toISOString().replace("T", " ").replace("Z", "");
+        box.value = `${box.value}${ts}  ${line}\n`;
+        box.scrollTop = box.scrollHeight;
+    }
+
+    function openRescueGasModal(evt) {
+        if (evt && evt.stopPropagation) evt.stopPropagation();
+        clearRescuePoll();
+        const modal = document.getElementById("rescueGasModal");
+        const txInput = document.getElementById("rescueTxHash");
+        const gasInput = document.getElementById("rescueGasAmount");
+        const logBox = document.getElementById("rescueGasLog");
+        if (logBox) logBox.value = "";
+        if (txInput) txInput.value = "";
+        if (gasInput) gasInput.value = "0.003";
+        if (modal) modal.classList.remove("hidden");
+        appendRescueLog("Enter the sendToken tx hash to top up Axelar gas.");
+    }
+
+    function closeRescueGasModal() {
+        clearRescuePoll();
+        const modal = document.getElementById("rescueGasModal");
+        if (modal) modal.classList.add("hidden");
+    }
+
+    function openGmpStatusModal(evt) {
+        if (evt && evt.stopPropagation) evt.stopPropagation();
+        const modal = document.getElementById("gmpStatusModal");
+        const txInput = document.getElementById("gmpStatusTxHash");
+        const fromInput = document.getElementById("gmpStatusFromChain");
+        const toInput = document.getElementById("gmpStatusToChain");
+        const logBox = document.getElementById("gmpStatusLog");
+        if (txInput) txInput.value = "";
+        if (fromInput) fromInput.value = "1";
+        if (toInput) toInput.value = "875";
+        if (logBox) logBox.value = "";
+        if (modal) modal.classList.remove("hidden");
+        appendGmpLog("Enter the sendToken tx hash to check Axelar GMP status.");
+    }
+
+    function closeGmpStatusModal() {
+        const modal = document.getElementById("gmpStatusModal");
+        if (modal) modal.classList.add("hidden");
+    }
+
+    async function submitGmpStatus(evt) {
+        evt.preventDefault();
+        const txInput = document.getElementById("gmpStatusTxHash");
+        const fromInput = document.getElementById("gmpStatusFromChain");
+        const toInput = document.getElementById("gmpStatusToChain");
+        const btn = document.getElementById("gmpStatusSubmitBtn");
+        const txHash = (txInput?.value || "").trim();
+        if (!/^0x[a-fA-F0-9]{64}$/.test(txHash)) {
+            appendGmpLog("Enter a valid tx hash (0x...).");
+            return;
+        }
+        if (btn) btn.disabled = true;
+        appendGmpLog(`Checking GMP status for ${txHash}...`);
+        try {
+            const params = new URLSearchParams({ tx_hash: txHash });
+            const fromVal = (fromInput?.value || "").trim();
+            const toVal = (toInput?.value || "").trim();
+            if (fromVal) params.set("from_chain_id", fromVal);
+            if (toVal) params.set("to_chain_id", toVal);
+            const resp = await fetch(apiUrl(`/api/hotwallet/gmp-status?${params.toString()}`), { cache: "no-store" });
+            const data = await resp.json();
+            if (!resp.ok) {
+                appendGmpLog(`Status check failed: ${data.error || resp.status}`);
+            } else {
+                appendGmpLog(JSON.stringify(data, null, 2));
+            }
+        } catch (err) {
+            appendGmpLog(`Error: ${err}`);
+        } finally {
+            if (btn) btn.disabled = false;
+        }
+    }
+
+    async function submitRescueGas(evt) {
+        evt.preventDefault();
+        clearRescuePoll();
+        const txInput = document.getElementById("rescueTxHash");
+        const gasInput = document.getElementById("rescueGasAmount");
+        const btn = document.getElementById("rescueGasSubmitBtn");
+        const txHash = (txInput?.value || "").trim();
+        const gasAmt = parseNumber(gasInput?.value);
+        const errs = [];
+        if (!/^0x[a-fA-F0-9]{64}$/.test(txHash)) errs.push("Enter a valid tx hash (0x...).");
+        if (!gasAmt || isNaN(gasAmt) || gasAmt <= 0) errs.push("Enter gas amount in ETH > 0.");
+        if (errs.length) {
+            appendRescueLog(errs.join(" "));
+            return;
+        }
+        if (btn) btn.disabled = true;
+        appendRescueLog(`Topping up gas for ${txHash} with ${gasAmt.toFixed(3)} ETH...`);
+        try {
+            const resp = await fetch(apiUrl("/api/hotwallet/topup-gas"), {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ tx_hash: txHash, gas_amount_eth: gasAmt }),
+            });
+            const data = await resp.json();
+            if (!resp.ok) {
+                const extra = data?.detail ? ` (${data.detail})` : "";
+                appendRescueLog(`Rescue failed: ${data.error || resp.status}${extra}`);
+                if (btn) btn.disabled = false;
+                return;
+            }
+            appendRescueLog(`Top-up submitted. Tx: ${data.tx || "(pending)"}`);
+            if (data.out) appendRescueLog(String(data.out).trim());
+        } catch (err) {
+            appendRescueLog(`Error: ${err}`);
+        } finally {
+            if (btn) btn.disabled = false;
+        }
+    }
+
+    function openConvertUsdcModal(evt) {
+        if (evt && evt.stopPropagation) evt.stopPropagation();
+        const modal = document.getElementById("convertUsdcModal");
+        const amtInput = document.getElementById("convertUsdcAmount");
+        const logBox = document.getElementById("convertUsdcLog");
+        if (logBox) logBox.value = "";
+        const balText = document.getElementById("walletOsmoUsdcBalance")?.textContent || "";
+        const avail = parseNumber(balText);
+        if (amtInput) {
+            amtInput.value = "";
+            amtInput.placeholder = isNaN(avail) ? "0.000000" : `Available: ${avail.toFixed(6)}`;
+        }
+        if (modal) modal.classList.remove("hidden");
+        appendConvertLog("Convert Osmosis USDC to ARKEO and IBC to Arkeo.");
+    }
+
+    function closeConvertUsdcModal() {
+        const modal = document.getElementById("convertUsdcModal");
+        if (modal) modal.classList.add("hidden");
+    }
+
+    async function submitConvertUsdc(evt) {
+        evt.preventDefault();
+        const amtInput = document.getElementById("convertUsdcAmount");
+        const btn = document.getElementById("convertUsdcSubmitBtn");
+        const amt = parseNumber(amtInput?.value);
+        const balText = document.getElementById("walletOsmoUsdcBalance")?.textContent || "";
+        const avail = parseNumber(balText);
+        const errs = [];
+        if (!amt || isNaN(amt) || amt <= 0) errs.push("Enter a valid amount > 0.");
+        if (!isNaN(avail) && avail >= 0 && amt > avail) errs.push(`Amount exceeds available USDC (${avail.toFixed(6)}).`);
+        if (errs.length) {
+            appendConvertLog(errs.join(" "));
+            return;
+        }
+        if (btn) btn.disabled = true;
+        appendConvertLog(`Submitting convert of ${amt.toFixed(6)} USDC...`);
+        try {
+            const resp = await fetch(apiUrl("/api/hotwallet/convert-usdc-to-arkeo"), {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ amount: amt.toFixed(6) }),
+            });
+            const data = await resp.json();
+            if (!resp.ok) {
+                appendConvertLog(`Convert failed: ${data.error || resp.status} ${data.detail || ""}`.trim());
+                if (btn) btn.disabled = false;
+                return;
+            }
+            if (data.swap_tx) appendConvertLog(`Swap tx: ${data.swap_tx}`);
+            if (data.ibc_tx) appendConvertLog(`IBC tx: ${data.ibc_tx}`);
+            appendConvertLog(`Status: ${data.status || "submitted"}`);
+            if (data.usdc_denom) appendConvertLog(`USDC denom: ${data.usdc_denom}`);
+            if (data.arkeo_denom) appendConvertLog(`ARKEO denom: ${data.arkeo_denom}`);
+            if (data.arrival_confirmed) appendConvertLog("ARKEO detected on Arkeo chain.");
+            refreshHeader();
+        } catch (err) {
+            appendConvertLog(`Error: ${err}`);
+        } finally {
+            if (btn) btn.disabled = false;
+        }
+    }
+    async function pollOsmosisForArrival(targetIncrease) {
+        const maxPolls = 60; // ~10-15 minutes if we adjust interval
+        let polls = 0;
+        appendSendUsdcLog("Watching Osmosis balance for arrival...");
+        sendUsdcPollHandle = setInterval(async () => {
+            polls += 1;
+            try {
+                const resp = await fetch(apiUrl("/api/osmosis-balance"), { cache: "no-store" });
+                const data = await resp.json();
+                const usdcStr = data?.usdc || data?.balance || data;
+                const current = parseNumber(usdcStr);
+                if (sendUsdcStartUsdc !== null && !isNaN(current)) {
+                    const delta = current - sendUsdcStartUsdc;
+                    appendSendUsdcLog(`Osmosis USDC: ${current.toFixed(6)} (Δ ${delta.toFixed(6)})`);
+                    if (delta >= targetIncrease - 1e-6) {
+                        appendSendUsdcLog("USDC detected on Osmosis. Transfer complete.");
+                        clearSendUsdcPoll();
+                        refreshHeader();
+                        return;
+                    }
+                }
+            } catch (err) {
+                appendSendUsdcLog(`Osmosis poll error: ${err}`);
+            }
+            if (polls >= maxPolls) {
+                appendSendUsdcLog("Stopped watching (timeout).");
+                clearSendUsdcPoll();
+            }
+        }, 15000); // 15s cadence
+    }
+
+    async function submitSendUsdc(evt) {
+        evt.preventDefault();
+        clearSendUsdcPoll();
+        const amtInput = document.getElementById("sendUsdcAmount");
+        const gasInput = document.getElementById("sendUsdcGasAmount");
+        const addFees = document.getElementById("sendUsdcAddFees");
+        const btn = document.getElementById("sendUsdcSubmitBtn");
+        const amt = parseNumber(amtInput?.value);
+        const gasAmt = addFees?.checked ? parseNumber(gasInput?.value) : 0;
+        const errs = [];
+        const balText = document.getElementById("walletEthUsdcBalance")?.textContent || "";
+        const avail = parseNumber(balText);
+        if (!amt || isNaN(amt) || amt <= 0) errs.push("Enter a valid amount > 0.");
+        if (!isNaN(avail) && avail >= 0 && amt > avail) errs.push(`Amount exceeds available USDC (${avail.toFixed(6)}).`);
+        if (addFees?.checked) {
+            if (!gasAmt || isNaN(gasAmt) || gasAmt <= 0) errs.push("Enter gas amount in ETH when adding fees.");
+        }
+        if (errs.length) {
+            appendSendUsdcLog(errs.join(" "));
+            return;
+        }
+        sendUsdcAmount = amt;
+        if (btn) btn.disabled = true;
+        appendSendUsdcLog(`Starting send of ${amt.toFixed(6)} USDC...`);
+        // snapshot Osmosis balance before send
+        try {
+            const balResp = await fetch(apiUrl("/api/osmosis-balance"), { cache: "no-store" });
+            const balData = await balResp.json();
+            const usdcStr = balData?.usdc || balData?.balance || balData;
+            const baseUsdc = parseNumber(usdcStr);
+            if (!isNaN(baseUsdc)) {
+                sendUsdcStartUsdc = baseUsdc;
+                appendSendUsdcLog(`Starting Osmosis USDC balance: ${baseUsdc.toFixed(6)}`);
+            }
+        } catch (err) {
+            appendSendUsdcLog(`Could not read Osmosis balance pre-send: ${err}`);
+        }
+        try {
+            const body = { amount: amt.toFixed(6) };
+            if (addFees?.checked && gasAmt > 0) {
+                body.gas_amount_eth = Number(gasAmt.toFixed(6));
+                appendSendUsdcLog(`Including Axelar gas payment: ${gasAmt.toFixed(6)} ETH`);
+            }
+            const resp = await fetch(apiUrl("/api/hotwallet/send-usdc"), {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body),
+            });
+            const data = await resp.json();
+            if (!resp.ok) {
+                appendSendUsdcLog(`Send failed: ${data.error || resp.status}`);
+                if (btn) btn.disabled = false;
+                return;
+            }
+            if (data.approve_tx) appendSendUsdcLog(`Approve tx: ${data.approve_tx}`);
+            if (data.send_tx) appendSendUsdcLog(`sendToken tx: ${data.send_tx}`);
+            appendSendUsdcLog("Submitted. Waiting for bridge completion...");
+            refreshHeader();
+            const targetIncrease = sendUsdcAmount || 0;
+            if (targetIncrease > 0) {
+                pollOsmosisForArrival(targetIncrease);
+            }
+        } catch (err) {
+            appendSendUsdcLog(`Error: ${err}`);
+            if (btn) btn.disabled = false;
+        }
+    }
+
+    async function viewHotwalletLogs(evt) {
+        if (evt && evt.stopPropagation) evt.stopPropagation();
+        const btn = evt?.currentTarget;
+        if (btn) btn.disabled = true;
+        try {
+            const resp = await fetch(apiUrl("/api/hotwallet/logs?limit=50"), { cache: "no-store" });
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const data = await resp.json();
+            const entries = Array.isArray(data?.logs) ? data.logs : Array.isArray(data) ? data : [];
+            if (!entries.length) {
+                showResultModal("Hot Wallet Logs", "No log entries yet.");
+                return;
+            }
+            const text = entries
+                .map((e) => {
+                    try {
+                        return JSON.stringify(e, null, 2);
+                    } catch (err) {
+                        return String(e);
+                    }
+                })
+                .join("\n\n");
+            showResultModal("Hot Wallet Logs", text);
+        } catch (err) {
+            showResultModal("Hot Wallet Logs", `Failed to load logs: ${err}`);
+        } finally {
+            if (btn) btn.disabled = false;
+        }
     }
 
     async function copyEthAddress() {
@@ -565,7 +1100,12 @@
             const osmoBlockVal = (!osmoHeight || osmoHeight.error) ? "(unavailable)" : (osmoHeight.height || "(unavailable)");
             const ethBalanceText = (!ethBal || ethBal.error) ? "—" : (ethBal.balance || "—");
             const ethUsdcBalanceText = (!ethUsdcBal || ethUsdcBal.error) ? "—" : (ethUsdcBal.balance || "—");
-            const osmoBalanceText = (!osmoBal || osmoBal.error) ? "—" : (osmoBal.balance || "—");
+            let osmoBalanceText = "—";
+            let osmoUsdcBalanceText = "—";
+            if (osmoBal && !osmoBal.error) {
+                osmoBalanceText = osmoBal.osmo || osmoBal.full || osmoBal.balance || "0.000000 OSMO";
+                osmoUsdcBalanceText = osmoBal.usdc || "0.000000 USDC";
+            }
 
             // Update hot wallets (best-effort)
             const setWallet = (key, balText, addrText) => {
@@ -581,6 +1121,8 @@
             setWallet("osmo", osmoBalanceText, wallets?.osmosis_address || "(external)");
             const ethUsdcEl = document.getElementById("walletEthUsdcBalance");
             if (ethUsdcEl) ethUsdcEl.textContent = ethUsdcBalanceText || "—";
+            const osmoUsdcEl = document.getElementById("walletOsmoUsdcBalance");
+            if (osmoUsdcEl) osmoUsdcEl.textContent = osmoUsdcBalanceText || "—";
             const ethBlock = document.getElementById("walletEthBlockBadge");
             if (ethBlock) ethBlock.textContent = ethBlockVal || "—";
             const osmoBlock = document.getElementById("walletOsmoBlockBadge");

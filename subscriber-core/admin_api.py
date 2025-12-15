@@ -52,6 +52,8 @@ ADMIN_SESSIONS: dict[str, float] = {}
 _LISTENER_SERVERS: dict[int, dict] = {}
 _LISTENER_LOCK = threading.Lock()
 _PORT_FLOOR = None
+HOTWALLET_LOG = os.path.join(CACHE_DIR, "logs", "hotwallet-tx.log")
+AXELAR_CONFIG_CACHE = os.path.join(CONFIG_DIR, "axelar", "eth-mainnet.json")
 
 
 def _load_port_floor() -> int:
@@ -243,6 +245,13 @@ def _strip_quotes(val: str | None) -> str:
         val = val[1:-1]
     return val
 
+def _safe_float(val, default: float = 0.0) -> float:
+    """Convert to float, returning default on failure."""
+    try:
+        return float(val)
+    except Exception:
+        return default
+
 def _pick_executable(name: str, candidates: list[str]) -> str | None:
     """Return the first existing executable for name or candidates."""
     found = shutil.which(name)
@@ -252,6 +261,860 @@ def _pick_executable(name: str, candidates: list[str]) -> str | None:
         if cand and os.path.isfile(cand):
             return cand
     return None
+
+
+def _append_hotwallet_log(entry: dict) -> None:
+    """Append a JSONL entry to the hotwallet log (best effort)."""
+    try:
+        os.makedirs(os.path.dirname(HOTWALLET_LOG), exist_ok=True)
+        with open(HOTWALLET_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False))
+            f.write("\n")
+    except Exception:
+        pass
+
+
+def _read_hotwallet_logs(limit: int = 50) -> list[dict]:
+    """Return the last N log entries (newest first)."""
+    if not os.path.isfile(HOTWALLET_LOG):
+        return []
+    try:
+        with open(HOTWALLET_LOG, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        lines = lines[-limit:]
+        out: list[dict] = []
+        for ln in reversed(lines):
+            try:
+                out.append(json.loads(ln))
+            except Exception:
+                continue
+        return out
+    except Exception:
+        return []
+
+
+def _parse_tx_hash(out: str) -> str | None:
+    if not out:
+        return None
+    # Prefer an explicit transactionHash=... if present
+    m_tx = re.search(r"transactionHash\s+0x[a-fA-F0-9]{64}", out)
+    if m_tx:
+        m_val = re.search(r"0x[a-fA-F0-9]{64}", m_tx.group(0))
+        if m_val:
+            return m_val.group(0)
+    # Fallback: pick the last 0x64 hex string (cast output lists blockHash first)
+    matches = re.findall(r"0x[a-fA-F0-9]{64}", out)
+    if matches:
+        return matches[-1]
+    return None
+
+
+def _run_cast_with_log(cmd: list[str], label: str) -> tuple[int, str, str | None]:
+    """Run cast command and return (code, output, txhash)."""
+    code, out = run_list(cmd)
+    txh = _parse_tx_hash(out)
+    return code, out, txh
+
+
+def _mask_cmd_sensitive(cmd: list[str]) -> list[str]:
+    """Return a copy of cmd with sensitive args (mnemonic, rpc-url) masked."""
+    if not isinstance(cmd, list):
+        return cmd
+    masked = []
+    skip_next = False
+    for i, part in enumerate(cmd):
+        if skip_next:
+            skip_next = False
+            continue
+        lower = str(part).lower()
+        if lower in ("--mnemonic", "--rpc-url"):
+            masked.append(part)
+            if i + 1 < len(cmd):
+                masked.append("***")
+                skip_next = True
+            continue
+        masked.append(part)
+    return masked
+
+
+def _mask_cmd_sensitive(cmd: list[str]) -> list[str]:
+    """Return a copy of cmd with sensitive args (mnemonic, rpc-url) masked."""
+    if not isinstance(cmd, list):
+        return cmd
+    masked = []
+    skip_next = False
+    for i, part in enumerate(cmd):
+        if skip_next:
+            skip_next = False
+            continue
+        lower = str(part).lower()
+        if lower in ("--mnemonic", "--rpc-url"):
+            # mask value
+            masked.append(part)
+            if i + 1 < len(cmd):
+                masked.append("***")
+                skip_next = True
+            continue
+        masked.append(part)
+    return masked
+
+
+def _resolve_axelar_eth_config() -> dict:
+    """
+    Resolve Axelar Gateway/Gas addresses for Ethereum mainnet.
+    Order: env override -> cached file -> fetch -> fallback defaults.
+    """
+    env_gateway = _strip_quotes(os.getenv("AXELAR_GATEWAY_ADDRESS") or "")
+    env_gas = _strip_quotes(os.getenv("AXELAR_GAS_SERVICE_ADDRESS") or "")
+    def _is_addr(a: str) -> bool:
+        return bool(a) and a.startswith("0x") and len(a) == 42 and all(ch in "0123456789abcdefABCDEF" for ch in a[2:])
+    # If both envs provided and valid, use them
+    if _is_addr(env_gateway) and _is_addr(env_gas):
+        return {"gateway": env_gateway, "gas_service": env_gas, "source": "env"}
+
+    # Try cache file
+    try:
+        if os.path.isfile(AXELAR_CONFIG_CACHE):
+            with open(AXELAR_CONFIG_CACHE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            gw = data.get("gateway")
+            gs = data.get("gas_service")
+            if _is_addr(gw) and _is_addr(gs):
+                return {"gateway": gw, "gas_service": gs, "source": "cache"}
+    except Exception:
+        pass
+
+    # Fetch from Axelar mainnet config
+    try:
+        url = "https://axelar-mainnet.s3.us-east-2.amazonaws.com/configs/mainnet-config-1.x.json"
+        with urllib.request.urlopen(url, timeout=8) as resp:
+            cfg = json.loads(resp.read())
+        eth_cfg = (cfg.get("evm") or {}).get("Ethereum") or (cfg.get("Evm") or {}).get("Ethereum") or {}
+        gw = eth_cfg.get("gateway") or eth_cfg.get("gatewayAddress") or ""
+        gs = eth_cfg.get("gasService") or eth_cfg.get("gasServiceAddress") or ""
+        if _is_addr(gw) and _is_addr(gs):
+            os.makedirs(os.path.dirname(AXELAR_CONFIG_CACHE), exist_ok=True)
+            with open(AXELAR_CONFIG_CACHE, "w", encoding="utf-8") as f:
+                json.dump({"gateway": gw, "gas_service": gs, "source": "fetched"}, f, indent=2)
+            return {"gateway": gw, "gas_service": gs, "source": "fetched"}
+    except Exception:
+        pass
+
+    # Fallback defaults (known-good)
+    fallback_gw = "0x4F4495243837681061C4743b74B3eEdf548D56A5"
+    fallback_gs = "0x2d5d7d31F671F86C782533cc367F14109a082712"
+    return {"gateway": fallback_gw, "gas_service": fallback_gs, "source": "fallback"}
+
+
+@app.get("/api/hotwallet/logs")
+def hotwallet_logs():
+    """Return recent hotwallet log entries (JSONL file)."""
+    try:
+        limit = int(request.args.get("limit", "50"))
+    except Exception:
+        limit = 50
+    logs = _read_hotwallet_logs(limit=limit)
+    return jsonify({"logs": logs, "path": HOTWALLET_LOG})
+
+
+@app.post("/api/hotwallet/send-usdc")
+def hotwallet_send_usdc():
+    """
+    Send USDC from ETH hot wallet to Osmosis via Axelar (token-only bridge).
+    Flow: approve(USDC -> gateway) then gateway.sendToken("osmosis", osmo_addr, "USDC", amount).
+    """
+    return jsonify({"error": "USDC bridge via Gravity not yet implemented"}), 501
+
+    payload = request.get_json(silent=True) or {}
+    amount = payload.get("amount")
+    gas_amount_val = payload.get("gas_amount_eth")
+    try:
+        amt_float = float(amount)
+    except Exception:
+        return jsonify({"error": "invalid amount"}), 400
+    if amt_float <= 0:
+        return jsonify({"error": "amount must be > 0"}), 400
+    if MIN_OSMO_BRIDGE_USDC and amt_float < MIN_OSMO_BRIDGE_USDC:
+        return jsonify({"error": f"amount must be >= {MIN_OSMO_BRIDGE_USDC} USDC"}), 400
+    amt_base = int(round(amt_float * (10 ** ETH_USDC_DECIMALS)))
+    gas_amount_eth = _safe_float(
+        gas_amount_val if gas_amount_val not in (None, "") else (os.getenv("AXELAR_GAS_AMOUNT_ETH") or AXELAR_GAS_AMOUNT_ETH),
+        0.0,
+    )
+    if gas_amount_eth < 0:
+        gas_amount_eth = 0.0
+    gas_amount_wei = int(round(gas_amount_eth * 1e18)) if gas_amount_eth else 0
+
+    if not ETH_RPC:
+        return jsonify({"error": "ETH_RPC not configured"}), 400
+    if not ETH_USDC_CONTRACT:
+        return jsonify({"error": "USDC contract not configured"}), 400
+
+    # Ensure wallets/addresses
+    settings = _merge_subscriber_settings()
+    settings, eth_err = _ensure_eth_wallet(settings)
+    settings, osmo_err = _ensure_osmo_wallet(settings)
+    if eth_err:
+        return jsonify({"error": f"eth wallet: {eth_err}"}), 400
+    if osmo_err:
+        return jsonify({"error": f"osmo wallet: {osmo_err}"}), 400
+    eth_addr = settings.get("ETH_ADDRESS")
+    osmo_addr = settings.get("OSMOSIS_ADDRESS")
+    if not eth_addr:
+        return jsonify({"error": "ETH_ADDRESS missing"}), 400
+    if not osmo_addr:
+        return jsonify({"error": "OSMOSIS_ADDRESS missing"}), 400
+
+    ax = _resolve_axelar_eth_config()
+    gw_addr = ax.get("gateway")
+    if not gw_addr:
+        return jsonify({"error": "Axelar gateway not resolved"}), 500
+    gs_addr = ax.get("gas_service")
+
+    mnemonic = settings.get("ETH_MNEMONIC") or ""
+    if not mnemonic:
+        return jsonify({"error": "ETH_MNEMONIC missing"}), 400
+
+    gas_tx = None
+    gas_cmd: list[str] | None = None
+    gas_out = ""
+    if gas_amount_wei > 0:
+        if not gs_addr:
+            return jsonify({"error": "Axelar gas service not resolved"}), 500
+        gas_cmd = [
+            CAST_BIN,
+            "send",
+            gs_addr,
+            "payNativeGasForContractCallWithToken(address,string,string,bytes,string,uint256,address)",
+            eth_addr,
+            "osmosis",
+            osmo_addr,
+            "0x",
+            "USDC",
+            str(amt_base),
+            eth_addr,
+            "--rpc-url",
+            ETH_RPC,
+            "--mnemonic",
+            mnemonic,
+            "--mnemonic-index",
+            "0",
+            "--value",
+            str(gas_amount_wei),
+        ]
+        gas_code, gas_out, gas_tx = _run_cast_with_log(gas_cmd, "gas_pay")
+        if gas_code != 0 or not gas_tx:
+            log_entry = {
+                "ts": datetime.utcnow().isoformat() + "Z",
+                "action": "send_usdc",
+                "stage": "gas_pay",
+                "amount_usdc": amt_float,
+                "amount_base_units": amt_base,
+                "gas_amount_eth": gas_amount_eth,
+                "gas_amount_wei": gas_amount_wei,
+                "eth_address": eth_addr,
+                "osmosis_address": osmo_addr,
+                "axelar_gateway": gw_addr,
+                "axelar_gas_service": gs_addr,
+                "status": "failed",
+                "error": gas_out,
+                "exit_code": gas_code,
+                "cmd": _mask_cmd_sensitive(gas_cmd),
+            }
+            _append_hotwallet_log(log_entry)
+            return jsonify({"error": "gas payment failed", "detail": gas_out}), 500
+
+    approve_cmd = [
+        CAST_BIN,
+        "send",
+        ETH_USDC_CONTRACT,
+        "approve(address,uint256)",
+        gw_addr,
+        str(amt_base),
+        "--rpc-url",
+        ETH_RPC,
+        "--mnemonic",
+        mnemonic,
+        "--mnemonic-index",
+        "0",
+    ]
+    send_cmd = [
+        CAST_BIN,
+        "send",
+        gw_addr,
+        "sendToken(string,string,string,uint256)",
+        "osmosis",
+        osmo_addr,
+        "USDC",
+        str(amt_base),
+        "--rpc-url",
+        ETH_RPC,
+        "--mnemonic",
+        mnemonic,
+        "--mnemonic-index",
+        "0",
+    ]
+
+    approve_code, approve_out, approve_tx = _run_cast_with_log(approve_cmd, "approve")
+    if approve_code != 0 or not approve_tx:
+        log_entry = {
+            "ts": datetime.utcnow().isoformat() + "Z",
+            "action": "send_usdc",
+            "stage": "approve",
+            "amount_usdc": amt_float,
+            "amount_base_units": amt_base,
+            "eth_address": eth_addr,
+            "osmosis_address": osmo_addr,
+            "axelar_gateway": gw_addr,
+            "axelar_gas_service": gs_addr,
+            "gas_amount_eth": gas_amount_eth,
+            "gas_amount_wei": gas_amount_wei,
+            "gas_tx": gas_tx,
+            "gas_cmd": _mask_cmd_sensitive(gas_cmd) if gas_cmd else None,
+            "gas_out": gas_out,
+            "status": "failed",
+            "error": approve_out,
+            "exit_code": approve_code,
+            "cmd": _mask_cmd_sensitive(approve_cmd),
+        }
+        _append_hotwallet_log(log_entry)
+        return jsonify({"error": "approve failed", "detail": approve_out}), 500
+
+    send_code, send_out, send_tx = _run_cast_with_log(send_cmd, "sendToken")
+    if send_code != 0 or not send_tx:
+        log_entry = {
+            "ts": datetime.utcnow().isoformat() + "Z",
+            "action": "send_usdc",
+            "stage": "sendToken",
+            "amount_usdc": amt_float,
+            "amount_base_units": amt_base,
+            "eth_address": eth_addr,
+            "osmosis_address": osmo_addr,
+            "axelar_gateway": gw_addr,
+            "axelar_gas_service": gs_addr,
+            "gas_amount_eth": gas_amount_eth,
+            "gas_amount_wei": gas_amount_wei,
+            "gas_tx": gas_tx,
+            "gas_cmd": _mask_cmd_sensitive(gas_cmd) if gas_cmd else None,
+            "gas_out": gas_out,
+            "approve_tx": approve_tx,
+            "status": "failed",
+            "error": send_out,
+            "exit_code": send_code,
+            "cmd": _mask_cmd_sensitive(send_cmd),
+        }
+        _append_hotwallet_log(log_entry)
+        return jsonify(
+            {
+                "error": "sendToken failed",
+                "detail": send_out,
+                "approve_tx": approve_tx,
+                "exit_code": send_code,
+                "send_cmd": _mask_cmd_sensitive(send_cmd),
+                "send_out": send_out,
+            }
+        ), 500
+
+    log_entry = {
+        "ts": datetime.utcnow().isoformat() + "Z",
+        "action": "send_usdc",
+        "amount_usdc": amt_float,
+        "amount_base_units": amt_base,
+        "eth_address": eth_addr,
+        "osmosis_address": osmo_addr,
+        "eth_usdc_contract": ETH_USDC_CONTRACT,
+        "eth_usdc_decimals": ETH_USDC_DECIMALS,
+        "axelar_gateway": gw_addr,
+        "axelar_source": ax.get("source"),
+        "axelar_gas_service": gs_addr,
+        "gas_amount_eth": gas_amount_eth,
+        "gas_amount_wei": gas_amount_wei,
+        "gas_tx": gas_tx,
+        "gas_cmd": _mask_cmd_sensitive(gas_cmd) if gas_cmd else None,
+        "gas_out": gas_out,
+        "approve_tx": approve_tx,
+        "send_tx": send_tx,
+        "approve_cmd": _mask_cmd_sensitive(approve_cmd),
+        "send_cmd": _mask_cmd_sensitive(send_cmd),
+        "approve_out": approve_out,
+        "send_out": send_out,
+        "status": "submitted",
+    }
+    _append_hotwallet_log(log_entry)
+    return jsonify(
+        {
+            "status": "submitted",
+            "approve_tx": approve_tx,
+            "send_tx": send_tx,
+            "gas_tx": gas_tx,
+            "approve_out": approve_out,
+            "send_out": send_out,
+            "approve_cmd": _mask_cmd_sensitive(approve_cmd),
+            "send_cmd": _mask_cmd_sensitive(send_cmd),
+            "gas_cmd": _mask_cmd_sensitive(gas_cmd) if gas_cmd else None,
+            "gas_out": gas_out,
+            "log_entry": log_entry,
+        }
+    )
+
+
+def _fetch_axelarscan_gmp(tx_hash: str) -> dict:
+    """Fetch GMP status from axelarscan (best effort)."""
+    urls = [
+        f"https://api.axelarscan.io/gmp?txHash={urllib.parse.quote(tx_hash)}",
+        f"https://axelarscan.io/api/gmp?txHash={urllib.parse.quote(tx_hash)}",
+    ]
+    last_err: dict | None = None
+    for url in urls:
+        try:
+            with urllib.request.urlopen(url, timeout=10) as resp:
+                data = json.loads(resp.read())
+                # Axelar returns a swagger descriptor when the hash is unknown; detect and convert to a clearer error.
+                if isinstance(data, dict) and data.get("methods"):
+                    last_err = {"error": "not_found", "detail": "tx hash not indexed on AxelarScan", "url": url}
+                    continue
+                return data
+        except urllib.error.HTTPError as e:
+            detail = ""
+            try:
+                detail = e.read().decode("utf-8")
+            except Exception:
+                detail = ""
+            last_err = {"error": str(e), "http_status": e.code, "detail": detail.strip(), "url": url}
+            # 404/not found can happen for unindexed hashes; continue to fallback
+            if e.code >= 500:
+                break
+        except Exception as e:
+            last_err = {"error": str(e), "url": url}
+            break
+    return last_err or {"error": "unknown"}
+
+def _fetch_squid_status(tx_hash: str, from_chain: str | None, to_chain: str | None) -> dict:
+    """Fetch status from Squid router v2 (best effort)."""
+    if not from_chain or not to_chain:
+        return {"error": "missing_chain_ids"}
+    try:
+        url = (
+            "https://v2.api.squidrouter.com/v2/status?"
+            + urllib.parse.urlencode(
+                {
+                    "transactionId": tx_hash,
+                    "fromChainId": from_chain,
+                    "toChainId": to_chain,
+                }
+            )
+        )
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            detail = e.read().decode("utf-8")
+        except Exception:
+            detail = ""
+        return {"error": str(e), "http_status": e.code, "detail": detail.strip()}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/hotwallet/gmp-status")
+def hotwallet_gmp_status():
+    """Return Axelar GMP status for a given tx hash."""
+    return jsonify({"error": "GMP status unavailable; Gravity bridge pending"}), 501
+
+
+@app.post("/api/hotwallet/topup-gas")
+def hotwallet_topup_gas():
+    """
+    Top up Axelar gas for a prior sendToken tx (GMP) on Ethereum.
+    Inputs: tx_hash (sendToken tx hash), gas_amount_eth (>0).
+    """
+    return jsonify({"error": "Axelar gas top-up disabled; Gravity bridge pending"}), 501
+
+
+# ---------- Osmosis USDC -> ARKEO swap + IBC (Gravity-less path) ----------
+def _osmosis_balances_raw(addr: str) -> list[dict]:
+    """Return raw balances list for an Osmosis address."""
+    cmd = [
+        "osmosisd",
+        "query",
+        "bank",
+        "balances",
+        addr,
+        "--node",
+        OSMOSIS_RPC,
+        "--output",
+        "json",
+    ]
+    code, out = run_list(cmd)
+    if code != 0:
+        raise RuntimeError(f"osmosis balances exit={code}: {out}")
+    data = json.loads(out)
+    return data.get("balances") or data.get("result") or []
+
+
+def _pick_usdc_osmo_denom(balances: list[dict]) -> tuple[str | None, int]:
+    """Pick a USDC denom from balances; returns (denom, available_base_units)."""
+    best = None
+    best_amt = 0
+    allow = set(OSMOSIS_USDC_DENOMS or [])
+    for b in balances:
+        denom = b.get("denom", "")
+        amt = b.get("amount", "0")
+        try:
+            amt_int = int(amt)
+        except Exception:
+            continue
+        d_lower = denom.lower()
+        if allow and denom in allow:
+            if amt_int > best_amt:
+                best = denom
+                best_amt = amt_int
+            continue
+        if "usdc" in d_lower:
+            if amt_int > best_amt:
+                best = denom
+                best_amt = amt_int
+    return best, best_amt
+
+
+def _discover_arkeo_osmo_denom(balances: list[dict]) -> str | None:
+    """Try to discover wrapped ARKEO denom on Osmosis."""
+    settings = _merge_subscriber_settings()
+    cached = settings.get("ARKEO_OSMO_DENOM") or os.getenv("ARKEO_OSMO_DENOM") or ""
+    if cached:
+        return cached
+    for b in balances:
+        denom = b.get("denom", "")
+        if "arkeo" in denom.lower():
+            return denom
+    # Try pool 2977 assets
+    try:
+        cmd = [
+            "osmosisd",
+            "query",
+            "poolmanager",
+            "pool",
+            "2977",
+            "--node",
+            OSMOSIS_RPC,
+            "--output",
+            "json",
+        ]
+        code, out = run_list(cmd)
+        if code == 0:
+            data = json.loads(out)
+            assets = data.get("pool", {}).get("pool_assets") or data.get("pool", {}).get("assets") or []
+            denoms = []
+            for a in assets:
+                token = a.get("token") or a.get("asset") or {}
+                denom = token.get("denom") or ""
+                if denom:
+                    denoms.append(denom)
+            for d in denoms:
+                if "usdc" not in d.lower():
+                    return d
+    except Exception:
+        pass
+    return None
+
+
+def _write_bridge_denoms(usdc_denom: str | None, arkeo_denom: str | None):
+    """Persist discovered Osmosis denoms to subscriber settings."""
+    if not usdc_denom and not arkeo_denom:
+        return
+    settings = _merge_subscriber_settings()
+    if usdc_denom:
+        settings["USDC_OSMO_DENOM"] = usdc_denom
+    if arkeo_denom:
+        settings["ARKEO_OSMO_DENOM"] = arkeo_denom
+    try:
+        _write_subscriber_settings_file(settings)
+    except Exception:
+        pass
+
+
+def _extract_txhash(out: str) -> str | None:
+    """Extract txhash: <hash> from osmosisd/arkeod output."""
+    if not out:
+        return None
+    m = re.search(r"txhash:\s*([0-9A-Fa-f]{64})", out)
+    return m.group(1) if m else None
+
+
+def _wait_for_osmo_balance_increase(addr: str, denom: str, base: int, attempts: int = 20, sleep_s: int = 3) -> bool:
+    """Poll Osmosis balance until denom increases by at least base units."""
+    try:
+        start_balances = _osmosis_balances_raw(addr)
+        start_amt = 0
+        for b in start_balances:
+            if b.get("denom") == denom:
+                try:
+                    start_amt = int(b.get("amount", "0"))
+                except Exception:
+                    start_amt = 0
+        for _ in range(attempts):
+            time.sleep(sleep_s)
+            bals = _osmosis_balances_raw(addr)
+            for b in bals:
+                if b.get("denom") == denom:
+                    try:
+                        amt = int(b.get("amount", "0"))
+                    except Exception:
+                        amt = 0
+                    if amt >= start_amt + base:
+                        return True
+    except Exception:
+        return False
+    return False
+
+
+def _arkeo_balance(addr: str) -> tuple[int, str | None]:
+    """Return (amount_base_units, error) for Arkeo wallet."""
+    try:
+        cmd = [
+            "arkeod",
+            "--home",
+            ARKEOD_HOME,
+            "query",
+            "bank",
+            "balances",
+            addr,
+            "--node",
+            ARKEOD_NODE,
+            "--output",
+            "json",
+        ]
+        code, out = run_list(cmd)
+        if code != 0:
+            return 0, f"arkeod query exit={code}: {out}"
+        data = json.loads(out)
+        balances = data.get("balances") or data.get("result") or []
+        for b in balances:
+            denom = b.get("denom", "")
+            if denom == "uarkeo":
+                try:
+                    return int(b.get("amount", "0")), None
+                except Exception:
+                    return 0, None
+        return 0, None
+    except Exception as e:
+        return 0, str(e)
+
+
+@app.post("/api/hotwallet/convert-usdc-to-arkeo")
+def hotwallet_convert_usdc_to_arkeo():
+    """
+    Swap Osmosis USDC -> wrapped ARKEO via pool 2977, then IBC to Arkeo hot wallet.
+    Requires OSMO gas and USDC on Osmosis.
+    """
+    payload = request.get_json(silent=True) or {}
+    amount = payload.get("amount")
+    try:
+        amt_float = float(amount)
+    except Exception:
+        return jsonify({"error": "invalid amount"}), 400
+    if amt_float <= 0:
+        return jsonify({"error": "amount must be > 0"}), 400
+    amt_base = int(round(amt_float * 1_000_000))
+
+    if not OSMOSIS_RPC:
+        return jsonify({"error": "OSMOSIS_RPC not configured"}), 400
+    if not OSMO_TO_ARKEO_CHANNEL:
+        return jsonify({"error": "OSMO_TO_ARKEO_CHANNEL not configured"}), 400
+
+    # Ensure wallets
+    settings = _merge_subscriber_settings()
+    settings, osmo_err = _ensure_osmo_wallet(settings)
+    settings, arkeo_err = _ensure_arkeo_mnemonic(settings)
+    if osmo_err:
+        return jsonify({"error": f"osmo wallet: {osmo_err}"}), 400
+    if arkeo_err:
+        return jsonify({"error": f"arkeo wallet: {arkeo_err}"}), 400
+    osmo_addr = settings.get("OSMOSIS_ADDRESS")
+    arkeo_addr, addr_err = derive_address(KEY_NAME, KEYRING)
+    if addr_err:
+        return jsonify({"error": f"arkeo address: {addr_err}"}), 400
+
+    # Balances
+    try:
+        balances = _osmosis_balances_raw(osmo_addr)
+    except Exception as e:
+        return jsonify({"error": f"osmosis balances: {e}"}), 500
+
+    # Gas check
+    osmo_gas = 0
+    for b in balances:
+        if b.get("denom") == "uosmo":
+            try:
+                osmo_gas = int(b.get("amount", "0"))
+            except Exception:
+                osmo_gas = 0
+            break
+    if osmo_gas < int(MIN_OSMO_GAS * 1_000_000):
+        return jsonify({"error": f"insufficient OSMO for gas (need >= {MIN_OSMO_GAS} OSMO)"}), 400
+
+    # USDC denom discovery
+    usdc_denom_override = settings.get("USDC_OSMO_DENOM") or os.getenv("USDC_OSMO_DENOM") or ""
+    usdc_denom = usdc_denom_override
+    usdc_avail = 0
+    if usdc_denom:
+        for b in balances:
+            if b.get("denom") == usdc_denom:
+                try:
+                    usdc_avail = int(b.get("amount", "0"))
+                except Exception:
+                    usdc_avail = 0
+                break
+    if not usdc_denom:
+        usdc_denom, usdc_avail = _pick_usdc_osmo_denom(balances)
+    if not usdc_denom:
+        return jsonify({"error": "USDC denom not found on Osmosis"}), 400
+    if usdc_avail < amt_base:
+        return jsonify({"error": f"insufficient USDC (have {usdc_avail/1e6:.6f}, need {amt_float:.6f})"}), 400
+
+    # ARKEO denom discovery (may still be None; we'll try pool lookup)
+    arkeo_denom = _discover_arkeo_osmo_denom(balances)
+    if not arkeo_denom:
+        return jsonify({"error": "ARKEO denom on Osmosis not found; ensure pool 2977 available"}), 400
+
+    # Slippage: minimal out (best effort; no price estimate)
+    min_out = max(1, int(amt_base * (1 - (DEFAULT_SLIPPAGE_BPS / 10_000.0))))
+
+    # Build swap route
+    route = json.dumps([{"pool_id": "2977", "token_out_denom": arkeo_denom}])
+    swap_cmd = [
+        "osmosisd",
+        "tx",
+        "poolmanager",
+        "swap-exact-amount-in",
+        route,
+        f"{amt_base}{usdc_denom}",
+        str(min_out),
+        "--from",
+        settings.get("OSMOSIS_KEY_NAME") or OSMOSIS_KEY_NAME,
+        "--keyring-backend",
+        "test",
+        "--home",
+        settings.get("OSMOSIS_HOME") or OSMOSIS_HOME,
+        "--chain-id",
+        "osmosis-1",
+        "--node",
+        OSMOSIS_RPC,
+        "--gas",
+        "auto",
+        "--gas-adjustment",
+        "1.5",
+        "--gas-prices",
+        "0.025uosmo",
+        "-y",
+    ]
+    swap_code, swap_out = run_list(swap_cmd)
+    swap_tx = _extract_txhash(swap_out)
+    if swap_code != 0 or not swap_tx:
+        return jsonify(
+            {
+                "error": "swap failed",
+                "detail": swap_out,
+                "swap_cmd": swap_cmd,
+                "swap_exit": swap_code,
+            }
+        ), 500
+
+    # Wait for ARKEO balance increase (best effort)
+    swap_confirmed = _wait_for_osmo_balance_increase(osmo_addr, arkeo_denom, 1, attempts=20, sleep_s=3)
+    if not swap_confirmed:
+        return jsonify(
+            {
+                "error": "swap submitted but ARKEO balance not observed; aborting IBC",
+                "swap_tx": swap_tx,
+                "arkeo_denom": arkeo_denom,
+            }
+        ), 500
+
+    # Use latest ARKEO balance for transfer (send whatever is available)
+    try:
+        balances_after = _osmosis_balances_raw(osmo_addr)
+    except Exception:
+        balances_after = balances
+    arkeo_avail = 0
+    for b in balances_after:
+        if b.get("denom") == arkeo_denom:
+            try:
+                arkeo_avail = int(b.get("amount", "0"))
+            except Exception:
+                arkeo_avail = 0
+            break
+    transfer_amt = arkeo_avail
+    if transfer_amt <= 0:
+        return jsonify({"error": "no ARKEO available after swap", "swap_tx": swap_tx}), 500
+
+    ibc_cmd = [
+        "osmosisd",
+        "tx",
+        "ibc-transfer",
+        "transfer",
+        "transfer",
+        OSMO_TO_ARKEO_CHANNEL,
+        arkeo_addr,
+        f"{transfer_amt}{arkeo_denom}",
+        "--from",
+        settings.get("OSMOSIS_KEY_NAME") or OSMOSIS_KEY_NAME,
+        "--keyring-backend",
+        "test",
+        "--home",
+        settings.get("OSMOSIS_HOME") or OSMOSIS_HOME,
+        "--chain-id",
+        "osmosis-1",
+        "--node",
+        OSMOSIS_RPC,
+        "--gas",
+        "auto",
+        "--gas-adjustment",
+        "1.5",
+        "--gas-prices",
+        "0.025uosmo",
+        "-y",
+    ]
+    ibc_code, ibc_out = run_list(ibc_cmd)
+    ibc_tx = _extract_txhash(ibc_out)
+    if ibc_code != 0 or not ibc_tx:
+        return jsonify(
+            {
+                "error": "ibc transfer failed",
+                "detail": ibc_out,
+                "swap_tx": swap_tx,
+                "ibc_cmd": ibc_cmd,
+                "ibc_exit": ibc_code,
+            }
+        ), 500
+
+    # Poll Arkeo chain for arrival (best effort)
+    start_arkeo_bal, _ = _arkeo_balance(arkeo_addr)
+    arrived = False
+    for _ in range(20):
+        time.sleep(3)
+        new_bal, _ = _arkeo_balance(arkeo_addr)
+        if new_bal > start_arkeo_bal:
+            arrived = True
+            break
+
+    # Persist discovered denoms
+    _write_bridge_denoms(usdc_denom, arkeo_denom)
+
+    return jsonify(
+        {
+            "status": "submitted",
+            "swap_tx": swap_tx,
+            "ibc_tx": ibc_tx,
+            "usdc_denom": usdc_denom,
+            "arkeo_denom": arkeo_denom,
+            "swap_cmd": _mask_cmd_sensitive(swap_cmd),
+            "ibc_cmd": _mask_cmd_sensitive(ibc_cmd),
+            "arrival_confirmed": arrived,
+        }
+    )
+
 
 
 CAST_BIN = _pick_executable("cast", ["/usr/local/bin/cast", "/root/.foundry/bin/cast"])
@@ -272,6 +1135,15 @@ ETH_USDC_DECIMALS = int(os.getenv("ETH_USDC_DECIMALS", "6"))
 OSMOSIS_RPC = _strip_quotes(os.getenv("OSMOSIS_RPC") or "")
 OSMOSIS_HOME = os.path.expanduser(os.getenv("OSMOSIS_HOME", "/app/config/osmosis"))
 OSMOSIS_KEY_NAME = os.getenv("OSMOSIS_KEY_NAME", "osmo-subscriber")
+DEFAULT_OSMOSIS_USDC_DENOMS = [
+    # Axelar canonical USDC on Osmosis
+    "ibc/27394FB092D2ECCD56123C74F36E4C1F926001CEADA9CA97EA622B25F41E5EB2",
+]
+_env_osmo_denoms = [d.strip() for d in (os.getenv("OSMOSIS_USDC_DENOMS") or "").split(",") if d.strip()]
+OSMOSIS_USDC_DENOMS = _env_osmo_denoms if _env_osmo_denoms else DEFAULT_OSMOSIS_USDC_DENOMS.copy()
+MIN_OSMO_GAS = _safe_float(os.getenv("MIN_OSMO_GAS") or 0.1, 0.1)
+DEFAULT_SLIPPAGE_BPS = int(os.getenv("DEFAULT_SLIPPAGE_BPS") or "100")
+OSMO_TO_ARKEO_CHANNEL = os.getenv("OSMO_TO_ARKEO_CHANNEL") or ""
 CHAIN_ID = _strip_quotes(os.getenv("CHAIN_ID") or os.getenv("ARKEOD_CHAIN_ID") or "")
 NODE_ARGS = ["--node", ARKEOD_NODE] if ARKEOD_NODE else []
 CHAIN_ARGS = ["--chain-id", CHAIN_ID] if CHAIN_ID else []
@@ -320,6 +1192,12 @@ PROXY_CONTRACT_LIMIT = int(os.getenv("PROXY_CONTRACT_LIMIT", "5000"))
 PROXY_OPEN_COOLDOWN = int(os.getenv("PROXY_OPEN_COOLDOWN", "0"))  # seconds to cool down a provider after open failure
 PROXY_CONTRACT_CACHE_TTL = int(os.getenv("PROXY_CONTRACT_CACHE_TTL", "45"))  # seconds; 0 disables TTL check
 SIGNHERE_HOME = os.path.join(Path.home(), ".arkeo")
+AXELAR_GAS_AMOUNT_ETH = _safe_float(os.getenv("AXELAR_GAS_AMOUNT_ETH") or 0.0, 0.0)
+MIN_OSMO_BRIDGE_USDC = _safe_float(os.getenv("MIN_OSMO_BRIDGE_USDC") or 0.0, 0.0)
+SQUID_FROM_CHAIN_ID = os.getenv("SQUID_FROM_CHAIN_ID") or "1"  # default to Ethereum mainnet
+SQUID_TO_CHAIN_ID = os.getenv("SQUID_TO_CHAIN_ID") or "875"  # default to Osmosis (Squid chain id)
+# Silence Foundry nightly warnings to keep logs clean
+os.environ.setdefault("FOUNDRY_DISABLE_NIGHTLY_WARNING", "1")
 
 
 def run(cmd: str) -> tuple[int, str]:
@@ -526,10 +1404,16 @@ def _default_subscriber_settings() -> dict:
         "ETH_USDC_CONTRACT": _strip_quotes(os.getenv("ETH_USDC_CONTRACT") or "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"),
         "ETH_USDC_DECIMALS": int(os.getenv("ETH_USDC_DECIMALS", "6")),
         "OSMOSIS_RPC": _strip_quotes(os.getenv("OSMOSIS_RPC") or ""),
+        "OSMOSIS_USDC_DENOMS": OSMOSIS_USDC_DENOMS,
         "ETH_MNEMONIC": "",
         "ETH_ADDRESS": "",
         "OSMOSIS_MNEMONIC": "",
         "OSMOSIS_ADDRESS": "",
+        "USDC_OSMO_DENOM": os.getenv("USDC_OSMO_DENOM", ""),
+        "ARKEO_OSMO_DENOM": os.getenv("ARKEO_OSMO_DENOM", ""),
+        "MIN_OSMO_GAS": MIN_OSMO_GAS,
+        "DEFAULT_SLIPPAGE_BPS": DEFAULT_SLIPPAGE_BPS,
+        "OSMO_TO_ARKEO_CHANNEL": os.getenv("OSMO_TO_ARKEO_CHANNEL") or OSMO_TO_ARKEO_CHANNEL,
     }
     return defaults
 
@@ -582,12 +1466,18 @@ def _merge_subscriber_settings(overrides: dict | None = None) -> dict:
         merged["ARKEOD_NODE"] = _ensure_tcp_scheme(_strip_quotes(merged.get("ARKEOD_NODE") or ""))
     merged.pop("SENTINEL_NODE", None)
     merged.pop("SENTINEL_PORT", None)
+    # Normalize Osmosis USDC denoms to list
+    denoms = merged.get("OSMOSIS_USDC_DENOMS")
+    if isinstance(denoms, str):
+        merged["OSMOSIS_USDC_DENOMS"] = [d.strip() for d in denoms.split(",") if d.strip()]
+    if not merged.get("OSMOSIS_USDC_DENOMS"):
+        merged["OSMOSIS_USDC_DENOMS"] = DEFAULT_OSMOSIS_USDC_DENOMS.copy()
     return merged
 
 
 def _apply_subscriber_settings(settings: dict) -> None:
     """Apply subscriber settings to globals and os.environ for runtime use."""
-    global KEY_NAME, KEYRING, ARKEOD_HOME, ARKEOD_NODE, CHAIN_ID, NODE_ARGS, CHAIN_ARGS, KEY_MNEMONIC, ETH_RPC, ETH_USDC_CONTRACT, ETH_USDC_DECIMALS, OSMOSIS_RPC
+    global KEY_NAME, KEYRING, ARKEOD_HOME, ARKEOD_NODE, CHAIN_ID, NODE_ARGS, CHAIN_ARGS, KEY_MNEMONIC, ETH_RPC, ETH_USDC_CONTRACT, ETH_USDC_DECIMALS, OSMOSIS_RPC, OSMOSIS_USDC_DENOMS, MIN_OSMO_GAS, DEFAULT_SLIPPAGE_BPS, OSMO_TO_ARKEO_CHANNEL
     if not isinstance(settings, dict):
         return
     KEY_NAME = settings.get("KEY_NAME", KEY_NAME)
@@ -606,6 +1496,29 @@ def _apply_subscriber_settings(settings: dict) -> None:
         ETH_USDC_DECIMALS = int(settings.get("ETH_USDC_DECIMALS") or ETH_USDC_DECIMALS or 6)
     except Exception:
         ETH_USDC_DECIMALS = 6
+    try:
+        denoms = settings.get("OSMOSIS_USDC_DENOMS") or []
+        if isinstance(denoms, str):
+            denoms = [d.strip() for d in denoms.split(",") if d.strip()]
+        if not isinstance(denoms, list):
+            denoms = []
+        if not denoms:
+            denoms = DEFAULT_OSMOSIS_USDC_DENOMS.copy()
+        OSMOSIS_USDC_DENOMS = denoms
+    except Exception:
+        OSMOSIS_USDC_DENOMS = DEFAULT_OSMOSIS_USDC_DENOMS.copy()
+    try:
+        MIN_OSMO_GAS = _safe_float(settings.get("MIN_OSMO_GAS") if settings.get("MIN_OSMO_GAS") not in (None, "") else MIN_OSMO_GAS, MIN_OSMO_GAS)
+    except Exception:
+        MIN_OSMO_GAS = 0.1
+    try:
+        DEFAULT_SLIPPAGE_BPS = int(settings.get("DEFAULT_SLIPPAGE_BPS") if settings.get("DEFAULT_SLIPPAGE_BPS") not in (None, "") else DEFAULT_SLIPPAGE_BPS or 100)
+    except Exception:
+        DEFAULT_SLIPPAGE_BPS = 100
+    try:
+        OSMO_TO_ARKEO_CHANNEL = settings.get("OSMO_TO_ARKEO_CHANNEL") or OSMO_TO_ARKEO_CHANNEL
+    except Exception:
+        OSMO_TO_ARKEO_CHANNEL = OSMO_TO_ARKEO_CHANNEL
     OSMOSIS_RPC = _strip_quotes(settings.get("OSMOSIS_RPC") or OSMOSIS_RPC or "")
 
     env_overrides = {
@@ -624,10 +1537,16 @@ def _apply_subscriber_settings(settings: dict) -> None:
         "ETH_USDC_CONTRACT": settings.get("ETH_USDC_CONTRACT", ""),
         "ETH_USDC_DECIMALS": settings.get("ETH_USDC_DECIMALS", ""),
         "OSMOSIS_RPC": settings.get("OSMOSIS_RPC", ""),
+        "OSMOSIS_USDC_DENOMS": ",".join(OSMOSIS_USDC_DENOMS) if OSMOSIS_USDC_DENOMS else "",
         "ETH_MNEMONIC": settings.get("ETH_MNEMONIC", ""),
         "ETH_ADDRESS": settings.get("ETH_ADDRESS", ""),
         "OSMOSIS_MNEMONIC": settings.get("OSMOSIS_MNEMONIC", ""),
         "OSMOSIS_ADDRESS": settings.get("OSMOSIS_ADDRESS", ""),
+        "USDC_OSMO_DENOM": settings.get("USDC_OSMO_DENOM", ""),
+        "ARKEO_OSMO_DENOM": settings.get("ARKEO_OSMO_DENOM", ""),
+        "MIN_OSMO_GAS": settings.get("MIN_OSMO_GAS", ""),
+        "DEFAULT_SLIPPAGE_BPS": settings.get("DEFAULT_SLIPPAGE_BPS", ""),
+        "OSMO_TO_ARKEO_CHANNEL": settings.get("OSMO_TO_ARKEO_CHANNEL", ""),
     }
     for k, v in env_overrides.items():
         if v is None:
@@ -1389,19 +2308,31 @@ def _osmosis_balance_internal() -> tuple[str | None, str | None]:
         data = json.loads(out)
         coins = data.get("balances") or data.get("result") or []
         if not coins:
-            return "0.000000 OSMO", None
-        def fmt(c):
+            return {"osmo": "0.000000 OSMO", "usdc": "0 USDC"}, None
+        def fmt_osmo(val_int: int) -> str:
+            return f"{val_int/1e6:.6f} OSMO"
+        total_osmo = 0
+        total_usdc = 0
+        other_parts: list[str] = []
+        for c in coins:
             denom = c.get("denom", "")
             amt = c.get("amount", "0")
             try:
-                val = int(amt)
-                if denom == "uosmo":
-                    return f"{val/1e6:.6f} OSMO"
-                return f"{amt} {denom}"
+                val_int = int(amt)
             except Exception:
-                return f"{amt} {denom}"
-        parts = [fmt(c) for c in coins]
-        return ", ".join(parts), None
+                other_parts.append(f"{amt} {denom}")
+                continue
+            if denom == "uosmo":
+                total_osmo += val_int
+            elif denom in OSMOSIS_USDC_DENOMS:
+                total_usdc += val_int
+            else:
+                other_parts.append(f"{amt} {denom}")
+        osmo_str = fmt_osmo(total_osmo)
+        usdc_str = f"{total_usdc/1e6:.6f} USDC"
+        extras = ", ".join(other_parts) if other_parts else ""
+        combined = ", ".join([p for p in [osmo_str, usdc_str, extras] if p])
+        return {"osmo": osmo_str, "usdc": usdc_str, "full": combined}, None
     except Exception as e:
         return None, str(e)
 
@@ -1412,6 +2343,8 @@ def osmosis_balance():
     bal, err = _osmosis_balance_internal()
     if err:
         return jsonify({"error": err}), 500
+    if isinstance(bal, dict):
+        return jsonify(bal)
     return jsonify({"balance": bal})
 
 
@@ -2570,7 +3503,18 @@ def _ensure_listeners_file() -> dict:
             if isinstance(data, dict) and isinstance(data.get("listeners"), list):
                 return data
     except (OSError, json.JSONDecodeError):
-        pass
+        # If the file exists but is malformed, back it up instead of overwriting silently
+        try:
+            if os.path.isfile(LISTENERS_FILE):
+                ts = int(time.time())
+                backup = f"{LISTENERS_FILE}.bad.{ts}"
+                os.rename(LISTENERS_FILE, backup)
+                try:
+                    print(f"[listeners] malformed listeners.json, backed up to {backup}")
+                except Exception:
+                    pass
+        except Exception:
+            pass
     try:
         with open(LISTENERS_FILE, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=True, indent=2)
@@ -2583,11 +3527,17 @@ def _write_listeners(data: dict) -> None:
     """Write listeners.json atomically."""
     cache_ensure_cache_dir()
     path = LISTENERS_FILE
-    tmp_path = f"{path}.tmp"
+    tmp_path = f"{path}.tmp.{os.getpid()}.{int(time.time() * 1000)}"
     try:
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=True, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp_path, path)
+        try:
+            print(f"[listeners] wrote {path} (tmp={tmp_path})")
+        except Exception:
+            pass
     except OSError:
         try:
             if os.path.exists(tmp_path):

@@ -404,12 +404,13 @@ button:disabled,
 }
 
 input[type="text"], input[type="number"], select, textarea {
-    width: 100%;
     background: #0b1220;
     color: #e2e8f0;
     border: 1px solid #1f2937;
     border-radius: 6px;
     padding: 8px 10px;
+    width: 100%;
+    box-sizing: border-box;
 }
 
 table {
@@ -734,6 +735,221 @@ pre {
     flex-direction: column;
     gap: 12px;
 }
+.modal-card form .form-row {
+    margin-bottom: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.send-amount-row {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    gap: 12px;
+    align-items: flex-end;
+}
+.send-amount-row .field-block {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    flex: 1 1 0;
+    min-width: 0;
+}
+.send-amount-row input[type="number"] {
+    width: 100%;
+    font-size: 14px;
+    padding: 6px 8px;
+    min-width: 0;
+    box-sizing: border-box;
+}
+#sendUsdcAmount {
+    margin-right: 16px;
+}
+.inline-header {
+    font-size: 12px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 2px;
+}
+.fee-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: nowrap;
+}
+.checkbox-inline {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--muted);
+    white-space: nowrap;
+}
+.modal-card .form-body {
+    margin-bottom: 12px;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.03);
+}
+#sendUsdcModal .modal-card {
+    display: flex;
+    flex-direction: column;
+}
+#sendUsdcModal form {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+#sendUsdcModal .form-body {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+}
+#sendUsdcModal .form-row {
+    display: flex;
+    flex-direction: column;
+}
+#sendUsdcModal .send-amount-row {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: row;
+    align-items: flex-end;
+}
+#sendUsdcModal .send-log-row {
+    flex: 1 1 auto;
+}
+#sendUsdcLog {
+    flex: 1 1 auto;
+    min-height: 0;
+    height: 100%;
+}
+#rescueGasModal .form-body {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+}
+#rescueGasModal .modal-card {
+    display: flex;
+    flex-direction: column;
+}
+#convertUsdcModal .modal-card {
+    display: flex;
+    flex-direction: column;
+}
+#convertUsdcModal form {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+#convertUsdcModal .form-body {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+}
+#convertUsdcModal .form-row {
+    display: flex;
+    flex-direction: column;
+}
+#convertUsdcModal .form-row:last-child {
+    flex: 1 1 auto;
+    min-height: 0;
+}
+#convertUsdcLog {
+    flex: 1 1 auto;
+    min-height: 0;
+    height: 100%;
+    width: 100%;
+    box-sizing: border-box;
+}
+#convertUsdcModal .send-log {
+    min-height: 0;
+}
+#rescueGasModal form {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+#rescueGasModal .form-row {
+    display: flex;
+    flex-direction: column;
+}
+#rescueGasModal .form-row:last-child {
+    flex: 1 1 auto;
+    min-height: 0;
+}
+#gmpStatusModal .modal-card {
+    display: flex;
+    flex-direction: column;
+}
+#gmpStatusModal form {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+#gmpStatusModal .form-body {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+}
+#gmpStatusModal .form-row {
+    display: flex;
+    flex-direction: column;
+}
+#gmpStatusModal .form-row:last-child {
+    flex: 1 1 auto;
+    min-height: 0;
+}
+#gmpStatusLog {
+    flex: 1 1 auto;
+    min-height: 0;
+    height: 100%;
+    width: 100%;
+    box-sizing: border-box;
+}
+#gmpStatusModal .send-log {
+    min-height: 0;
+}
+#rescueGasLog {
+    flex: 1 1 auto;
+    min-height: 0;
+    height: 100%;
+    width: 100%;
+    box-sizing: border-box;
+}
+#rescueGasModal .send-log {
+    min-height: 0;
+}
+.modal-actions {
+    display: flex;
+    justify-content: center;
+    gap: 12px;
+    margin-top: 12px;
+}
+.wallet-actions-row {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 8px;
+}
+.wallet-log-btn {
+    background: #fff;
+    color: #0181a6;
+    border: 1px solid #fff;
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease, transform 0.1s ease;
+}
+.wallet-log-btn:hover {
+    background: #e8f9ff;
+    color: #0181a6;
+    transform: translateY(-1px);
+}
+.wallet-log-btn:active {
+    transform: translateY(0);
+}
 .wallet-card {
     background: rgba(1, 129, 166, 0.5);
     border: 1px solid rgba(255, 255, 255, 0.35);
@@ -784,6 +1000,27 @@ pre {
     font-size: 12px;
     line-height: 1.3;
     word-break: break-all;
+}
+.wallet-actions-inline {
+    margin-top: 8px;
+}
+.wallet-action-btn {
+    background: #fff;
+    color: #0181a6;
+    border: 1px solid #fff;
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease, transform 0.1s ease;
+}
+.wallet-action-btn:hover {
+    background: #e8f9ff;
+    color: #0181a6;
+    transform: translateY(-1px);
+}
+.wallet-action-btn:active {
+    transform: translateY(0);
 }
 .hotwallet-header {
     display: flex;
@@ -963,6 +1200,26 @@ pre {
     flex-direction: column;
     overflow: hidden;
 }
+.modal-card.small-modal {
+    width: 420px;
+    max-width: 95vw;
+    height: auto;
+    max-height: 80vh;
+    padding: 16px;
+}
+.send-log {
+    width: 100%;
+    min-height: 180px;
+    font-family: Menlo, Monaco, Consolas, "Courier New", monospace;
+    font-size: 12px;
+    background: #0b1220;
+    color: #e5f2ff;
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    padding: 10px;
+    box-sizing: border-box;
+    resize: vertical;
+}
 .modal-body {
     text-align: left;
     white-space: pre-wrap;
@@ -980,7 +1237,6 @@ pre {
     line-height: 1.4;
     }
 .modal-card .primary {
-    margin-top: 12px;
     align-self: flex-end;
 }
 .modal-body pre {
