@@ -70,7 +70,7 @@
                 <img src="images/ethereum/info/logo.png" alt="Ethereum" class="wallet-icon">
                 <div class="wallet-block-badge">Block: <span id="walletEthBlockBadge">—</span></div>
                 <div class="wallet-title">Ethereum</div>
-                <div class="wallet-meta">ETH: <span id="walletEthBalance">—</span>
+                <div class="wallet-meta"><span id="walletEthBalance">—</span>
                     <span class="info-icon" title="Sending USDC requires a small amount of ETH for gas." onclick="showEthGasInfo()" aria-label="Gas info">
                         <svg viewBox="0 0 24 24" width="14" height="14" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
                             <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/>
@@ -79,7 +79,7 @@
                         </svg>
                     </span>
                 </div>
-                <div class="wallet-meta">USDC: <span id="walletEthUsdcBalance">—</span></div>
+                <div class="wallet-meta"><span id="walletEthUsdcBalance">—</span> (wrapped)</div>
                 <div class="wallet-meta wallet-copy">
                     <span>Address: <span id="walletEthAddress">—</span></span>
                     <span onclick="copyEthAddress()" title="Copy address" aria-label="Copy Ethereum address">
@@ -98,7 +98,7 @@
                 <img src="images/osmosis/info/logo.png" alt="Osmosis" class="wallet-icon">
                 <div class="wallet-block-badge">Block: <span id="walletOsmoBlockBadge">—</span></div>
                 <div class="wallet-title">Osmosis</div>
-                <div class="wallet-meta">OSMO: <span id="walletOsmoBalance">—</span>
+                <div class="wallet-meta"><span id="walletOsmoBalance">—</span>
                     <span class="info-icon" title="Sending tokens on Osmosis requires a small amount of OSMO for gas." onclick="showOsmoGasInfo()" aria-label="Gas info">
                         <svg viewBox="0 0 24 24" width="14" height="14" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
                             <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/>
@@ -107,7 +107,8 @@
                         </svg>
                     </span>
                 </div>
-                <div class="wallet-meta">USDC: <span id="walletOsmoUsdcBalance">—</span></div>
+                <div class="wallet-meta"><span id="walletOsmoUsdcBalance">—</span> (wrapped)</div>
+                <div class="wallet-meta"><span id="walletOsmoArkeoBalance">—</span> (wrapped)</div>
                 <div class="wallet-meta wallet-copy">
                     <span>Address: <span id="walletOsmoAddress">—</span></span>
                     <span onclick="copyOsmoAddress()" title="Copy address" aria-label="Copy Osmosis address">
@@ -117,14 +118,14 @@
                     </span>
                 </div>
                 <div class="wallet-actions-inline">
-                    <button class="wallet-action-btn" onclick="openConvertUsdcModal(event)" title="Convert USDC to ARKEO and IBC to Arkeo" aria-label="Convert USDC to ARKEO">Convert USDC → ARKEO</button>
+                    <button class="wallet-action-btn" onclick="openConvertUsdcModal(event)" title="Convert USDC to ARKEO and IBC to Arkeo" aria-label="Convert USDC to ARKEO">Convert USDC to ARKEO</button>
                 </div>
             </div>
             <div class="wallet-card">
                 <img src="images/arkeo-logo-200px_1.png" alt="Arkeo" class="wallet-icon" id="walletArkeoIcon">
                 <div class="wallet-block-badge">Block: <span id="walletArkeoBlockBadge">—</span></div>
                 <div class="wallet-title">Arkeo</div>
-                <div class="wallet-meta">Balance: <span id="walletArkeoBalance">—</span></div>
+                <div class="wallet-meta"><span id="walletArkeoBalance">—</span></div>
                 <div class="wallet-meta wallet-copy">
                     <span>Address: <span id="walletArkeoAddress">—</span></span>
                     <span onclick="copyArkeoAddress()" title="Copy address" aria-label="Copy address">
@@ -310,15 +311,23 @@
 
 <div id="convertUsdcModal" class="overlay hidden">
     <div class="overlay-card modal-card">
-        <h3>Convert USDC → ARKEO</h3>
+        <h3>Convert USDC to ARKEO (on Osmosis)</h3>
+        <div class="muted small" style="margin-bottom:8px;">Note: swap happens on Osmosis (pool 2977). Balances typically update within about a minute. Watch the status log below.</div>
         <form onsubmit="submitConvertUsdc(event)">
             <div class="form-body">
-                <div class="form-row">
-                    <label for="convertUsdcAmount">Amount (USDC on Osmosis)</label>
-                    <input type="number" id="convertUsdcAmount" min="0" step="0.000001" placeholder="0.000000" />
+                <div class="form-row convert-row">
+                    <div class="field-block">
+                        <label for="convertUsdcAmount">USDC Amount:</label>
+                        <input type="number" id="convertUsdcAmount" min="0" step="0.000001" placeholder="Available: 0.000000" oninput="debouncedConvertQuote()" />
+                        <div class="estimate-note" id="convertUsdcPriceNote">—</div>
+                    </div>
+                    <div class="field-block">
+                        <label for="convertUsdcEst">ARKEO Amount:</label>
+                        <div class="estimate-box" id="convertUsdcEst">—</div>
+                    </div>
                 </div>
                 <div class="form-row">
-                    <label for="convertUsdcLog">Status</label>
+                    <label for="convertUsdcLog">Log</label>
                     <textarea id="convertUsdcLog" class="send-log" rows="10" readonly></textarea>
                 </div>
             </div>
@@ -426,6 +435,9 @@
     let sendUsdcPollHandle = null;
     let sendUsdcStartUsdc = null;
     let sendUsdcAmount = null;
+    let convertUsdcPrice = null;
+    let convertQuoteTimer = null;
+    let convertWaitTimer = null;
     let rescuePollHandle = null;
 
     function clearSendUsdcPoll() {
@@ -505,6 +517,63 @@
         const ts = new Date().toISOString().replace("T", " ").replace("Z", "");
         box.value = `${box.value}${ts}  ${line}\n`;
         box.scrollTop = box.scrollHeight;
+    }
+
+    function setConvertButtonEnabled(enabled) {
+        const btn = document.getElementById("convertUsdcSubmitBtn");
+        if (btn) {
+            btn.disabled = !enabled;
+            if (!enabled) btn.classList.add("disabled");
+            else btn.classList.remove("disabled");
+        }
+    }
+
+    function debouncedConvertQuote() {
+        if (convertQuoteTimer) clearTimeout(convertQuoteTimer);
+        setConvertButtonEnabled(false);
+        convertQuoteTimer = setTimeout(fetchConvertQuote, 350);
+    }
+
+    async function fetchConvertQuote() {
+        const estEl = document.getElementById("convertUsdcEst");
+        const note = document.getElementById("convertUsdcPriceNote");
+        const amtInput = document.getElementById("convertUsdcAmount");
+        const amt = parseNumber(amtInput?.value);
+        if (!amt || isNaN(amt) || amt <= 0) {
+            if (estEl) estEl.textContent = "—";
+            if (note) note.textContent = "Enter an amount to quote.";
+            setConvertButtonEnabled(false);
+            return;
+        }
+        if (note) note.textContent = "Fetching quote...";
+        try {
+            const resp = await fetch(apiUrl("/api/osmosis-quote-usdc-to-arkeo"), {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ amount: amt.toFixed(6) }),
+            });
+            const data = await resp.json();
+            if (!resp.ok || data.error) {
+                if (estEl) estEl.textContent = "—";
+                if (note) note.textContent = data?.error ? `Quote failed: ${data.error}` : "Quote failed";
+                setConvertButtonEnabled(false);
+                return;
+            }
+            convertUsdcPrice = data;
+            const out = data.amount_out || 0;
+            const minOut = data.min_amount_out || 0;
+            if (estEl) estEl.textContent = `≈ ${Number(out).toFixed(6)} ARKEO`;
+            if (note && data.slippage_bps !== undefined) {
+                note.textContent = `* Min received from pool (${(data.slippage_bps / 100).toFixed(2)}% slippage): ${Number(minOut).toFixed(6)} ARKEO`;
+            } else if (note) {
+                note.textContent = "Quote ready";
+            }
+            setConvertButtonEnabled(true);
+        } catch (err) {
+            if (estEl) estEl.textContent = "—";
+            if (note) note.textContent = `Quote failed: ${err}`;
+            setConvertButtonEnabled(false);
+        }
     }
 
     function openRescueGasModal(evt) {
@@ -629,33 +698,47 @@
         const avail = parseNumber(balText);
         if (amtInput) {
             amtInput.value = "";
-            amtInput.placeholder = isNaN(avail) ? "0.000000" : `Available: ${avail.toFixed(6)}`;
+            amtInput.placeholder = isNaN(avail) ? "Available: 0.000000" : `Available: ${avail.toFixed(6)}`;
         }
         if (modal) modal.classList.remove("hidden");
         appendConvertLog("Convert Osmosis USDC to ARKEO and IBC to Arkeo.");
+        setConvertButtonEnabled(false);
+        fetchConvertQuote();
     }
 
     function closeConvertUsdcModal() {
         const modal = document.getElementById("convertUsdcModal");
         if (modal) modal.classList.add("hidden");
+        setConvertButtonEnabled(true);
+        if (convertWaitTimer) {
+            clearInterval(convertWaitTimer);
+            convertWaitTimer = null;
+        }
     }
 
     async function submitConvertUsdc(evt) {
         evt.preventDefault();
         const amtInput = document.getElementById("convertUsdcAmount");
-        const btn = document.getElementById("convertUsdcSubmitBtn");
         const amt = parseNumber(amtInput?.value);
         const balText = document.getElementById("walletOsmoUsdcBalance")?.textContent || "";
         const avail = parseNumber(balText);
         const errs = [];
         if (!amt || isNaN(amt) || amt <= 0) errs.push("Enter a valid amount > 0.");
         if (!isNaN(avail) && avail >= 0 && amt > avail) errs.push(`Amount exceeds available USDC (${avail.toFixed(6)}).`);
+        if (!convertUsdcPrice || !convertUsdcPrice.amount_out) errs.push("Quote not ready yet; please wait.");
         if (errs.length) {
             appendConvertLog(errs.join(" "));
             return;
         }
-        if (btn) btn.disabled = true;
+        setConvertButtonEnabled(false);
         appendConvertLog(`Submitting convert of ${amt.toFixed(6)} USDC...`);
+        if (convertWaitTimer) {
+            clearInterval(convertWaitTimer);
+            convertWaitTimer = null;
+        }
+        convertWaitTimer = setInterval(() => {
+            appendConvertLog("Waiting for swap/IBC... still working.");
+        }, 10000);
         try {
             const resp = await fetch(apiUrl("/api/hotwallet/convert-usdc-to-arkeo"), {
                 method: "POST",
@@ -663,22 +746,43 @@
                 body: JSON.stringify({ amount: amt.toFixed(6) }),
             });
             const data = await resp.json();
+            if (convertWaitTimer) {
+                clearInterval(convertWaitTimer);
+                convertWaitTimer = null;
+            }
             if (!resp.ok) {
                 appendConvertLog(`Convert failed: ${data.error || resp.status} ${data.detail || ""}`.trim());
-                if (btn) btn.disabled = false;
+                if (data.swap_tx) appendConvertLog(`Swap tx: ${data.swap_tx}`);
+                if (data.raw_log) appendConvertLog(`Swap raw log: ${data.raw_log}`);
+                if (data.swap_cmd) appendConvertLog(`Swap cmd: ${JSON.stringify(data.swap_cmd)}`);
+                setConvertButtonEnabled(true);
                 return;
             }
             if (data.swap_tx) appendConvertLog(`Swap tx: ${data.swap_tx}`);
+            if (data.arkeo_avail !== undefined) {
+                appendConvertLog(`ARKEO available for IBC: ${Number(data.arkeo_avail/1e8).toFixed(8)} ARKEO`);
+            }
             if (data.ibc_tx) appendConvertLog(`IBC tx: ${data.ibc_tx}`);
             appendConvertLog(`Status: ${data.status || "submitted"}`);
             if (data.usdc_denom) appendConvertLog(`USDC denom: ${data.usdc_denom}`);
             if (data.arkeo_denom) appendConvertLog(`ARKEO denom: ${data.arkeo_denom}`);
-            if (data.arrival_confirmed) appendConvertLog("ARKEO detected on Arkeo chain.");
+            if (data.arrival_confirmed) {
+                appendConvertLog("Swap complete: ARKEO balance updated.");
+            } else {
+                if (data.arkeo_final !== undefined) {
+                    const expected = data.arkeo_expected !== undefined ? ` (expected >= ${(Number(data.arkeo_expected/1e8).toFixed(8))})` : "";
+                    const tol = data.arrival_tolerance_bps !== undefined ? ` (tolerance ${Number(data.arrival_tolerance_bps/100).toFixed(2)}%)` : "";
+                    appendConvertLog(
+                        `Waiting for ARKEO balance update; current ARKEO: ${Number(data.arkeo_final/1e8).toFixed(8)}${expected}${tol}`
+                    );
+                }
+                appendConvertLog("Swap submitted. Waiting for ARKEO balance to update...");
+            }
             refreshHeader();
         } catch (err) {
             appendConvertLog(`Error: ${err}`);
         } finally {
-            if (btn) btn.disabled = false;
+            setConvertButtonEnabled(true);
         }
     }
     async function pollOsmosisForArrival(targetIncrease) {
@@ -1102,9 +1206,11 @@
             const ethUsdcBalanceText = (!ethUsdcBal || ethUsdcBal.error) ? "—" : (ethUsdcBal.balance || "—");
             let osmoBalanceText = "—";
             let osmoUsdcBalanceText = "—";
+            let osmoArkeoBalanceText = "—";
             if (osmoBal && !osmoBal.error) {
                 osmoBalanceText = osmoBal.osmo || osmoBal.full || osmoBal.balance || "0.000000 OSMO";
                 osmoUsdcBalanceText = osmoBal.usdc || "0.000000 USDC";
+                osmoArkeoBalanceText = osmoBal.arkeo || "0.000000 ARKEO";
             }
 
             // Update hot wallets (best-effort)
@@ -1123,6 +1229,8 @@
             if (ethUsdcEl) ethUsdcEl.textContent = ethUsdcBalanceText || "—";
             const osmoUsdcEl = document.getElementById("walletOsmoUsdcBalance");
             if (osmoUsdcEl) osmoUsdcEl.textContent = osmoUsdcBalanceText || "—";
+            const osmoArkeoEl = document.getElementById("walletOsmoArkeoBalance");
+            if (osmoArkeoEl) osmoArkeoEl.textContent = osmoArkeoBalanceText || "—";
             const ethBlock = document.getElementById("walletEthBlockBadge");
             if (ethBlock) ethBlock.textContent = ethBlockVal || "—";
             const osmoBlock = document.getElementById("walletOsmoBlockBadge");
