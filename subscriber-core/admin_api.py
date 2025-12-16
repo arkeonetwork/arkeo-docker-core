@@ -6062,6 +6062,9 @@ def _candidate_providers(cfg: dict) -> list[dict]:
         for ts in top:
             if not isinstance(ts, dict):
                 continue
+            ts_status = str(ts.get("status") or "").lower()
+            if ts_status == "down":
+                continue
             pk = ts.get("provider_pubkey")
             if not pk:
                 continue
@@ -6132,17 +6135,21 @@ def _resolve_listener_target(listener: dict) -> tuple[str | None, str | None, st
     for ts in top if isinstance(top, list) else []:
         if not isinstance(ts, dict):
             continue
+        ts_status = str(ts.get("status") or "").lower()
+        if ts_status == "down":
+            continue
         pk = ts.get("provider_pubkey") or listener.get("provider_pubkey")
         sent = ts.get("sentinel_url")
         mon = ts.get("provider_moniker") or listener.get("provider_moniker")
         meta_uri = ts.get("metadata_uri")
         if not sent and _is_external(meta_uri):
             sent = _sentinel_from_metadata_uri(meta_uri)
+        sent = _normalize_sentinel_url(sent)
         if pk and sent:
             return pk, sent, mon
     # Fall back to stored values
     pk = listener.get("provider_pubkey")
-    sent = listener.get("sentinel_url")
+    sent = _normalize_sentinel_url(listener.get("sentinel_url"))
     mon = listener.get("provider_moniker")
     if pk and sent:
         return pk, sent, mon
@@ -6622,6 +6629,7 @@ class PaygProxyHandler(BaseHTTPRequestHandler):
                 "service_name": service_name,
                 "sentinel": cfg.get("provider_sentinel_api"),
                 "height": None,
+                "active_contract_provider_moniker": None,
             }
             try:
                 payload["height"] = _get_current_height(node)
@@ -6661,6 +6669,15 @@ class PaygProxyHandler(BaseHTTPRequestHandler):
                                 pass
                     if active:
                         payload["active_contract"] = active
+                        try:
+                            pm = _active_provider_moniker(active.get("provider"))
+                            if pm:
+                                payload["active_contract_provider_moniker"] = pm
+                                active = dict(active)
+                                active["provider_moniker"] = pm
+                                payload["active_contract"] = active
+                        except Exception:
+                            pass
                         payload["active_contract_detail"] = "Active contract found for the selected provider service."
                         if provider_filter:
                             payload["provider_pubkey"] = provider_filter
@@ -6682,6 +6699,18 @@ class PaygProxyHandler(BaseHTTPRequestHandler):
                         payload["active_contract_detail"] = "No active contract found for the selected provider service."
                 except Exception as e:
                     payload["active_contract_detail"] = f"Failed to load contract: {e}"
+
+            # If we already had an active_contract cached, still try to enrich with moniker
+            if payload.get("active_contract") and not payload.get("active_contract_provider_moniker"):
+                try:
+                    pm = _active_provider_moniker(payload["active_contract"].get("provider"))
+                    if pm:
+                        payload["active_contract_provider_moniker"] = pm
+                        ac = dict(payload["active_contract"])
+                        ac["provider_moniker"] = pm
+                        payload["active_contract"] = ac
+                except Exception:
+                    pass
 
             return self._send_json(200, payload)
         # Forward GET requests through the same payg flow (needed for REST-style services/tests)

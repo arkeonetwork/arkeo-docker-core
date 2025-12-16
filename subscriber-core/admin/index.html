@@ -415,10 +415,13 @@
         <h3>Send ARKEO to Arkeo Chain</h3>
         <div class="muted small" style="margin-bottom:8px;">Note: ARKEO is IBC-transferred from Osmosis to the Arkeo chain. Watch the status log below.</div>
         <form onsubmit="submitConvertArkeoNative(event)">
-            <div class="form-body">
-                <div class="form-row convert-row">
-                    <div class="field-block">
-                        <label for="convertArkeoNativeAmount">ARKEO Amount (wrapped)</label>
+                <div class="form-body">
+                    <div class="form-row convert-row">
+                        <div class="field-block">
+                        <div class="field-inline">
+                            <label for="convertArkeoNativeAmount">ARKEO Amount (wrapped)</label>
+                            <button type="button" class="mini-btn" onclick="setConvertArkeoNativeMax()">Max</button>
+                        </div>
                         <input type="number" id="convertArkeoNativeAmount" min="0" step="0.00000001" placeholder="Available: 0.00000000" oninput="checkConvertArkeoNativeAmount()" />
                         <div class="estimate-note" id="convertArkeoNativeNote">IBC transfer to Arkeo chain.</div>
                     </div>
@@ -1274,6 +1277,16 @@
         if (!isNaN(avail) && amtInput) {
             amtInput.value = avail.toFixed(8);
             checkConvertArkeoAmount();
+        }
+    }
+
+    function setConvertArkeoNativeMax() {
+        const balText = document.getElementById("walletOsmoArkeoBalance")?.textContent || "";
+        const avail = parseNumber(balText);
+        const amtInput = document.getElementById("convertArkeoNativeAmount");
+        if (!isNaN(avail) && amtInput) {
+            amtInput.value = avail.toFixed(8);
+            checkConvertArkeoNativeAmount();
         }
     }
 
