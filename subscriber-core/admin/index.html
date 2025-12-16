@@ -1479,6 +1479,8 @@
             }
             if (data.ibc_tx) appendConvertArkeoNativeLog(`IBC tx: ${data.ibc_tx}`);
             if (data.osmo_tx) appendConvertArkeoNativeLog(`Osmosis tx: ${data.osmo_tx}`);
+            if (data.osmo_tx_code !== undefined) appendConvertArkeoNativeLog(`Osmosis tx code: ${data.osmo_tx_code}`);
+            if (data.osmo_tx_raw_log) appendConvertArkeoNativeLog(`Osmosis raw log: ${data.osmo_tx_raw_log}`);
             if (data.packet_sequence) {
                 appendConvertArkeoNativeLog(
                     `IBC packet seq=${data.packet_sequence} src=${data.osmo_src_channel || "-"} dst=${data.arkeo_dst_channel || "-"}`

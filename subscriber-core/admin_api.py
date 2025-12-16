@@ -1701,6 +1701,33 @@ def _extract_txhash(out: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _query_osmo_tx(txhash: str, attempts: int = 5, sleep_s: float = 2.0) -> tuple[bool, dict | None]:
+    """Poll osmosisd for a txhash; returns (found, tx_response dict or None)."""
+    if not txhash:
+        return False, None
+    cmd = [
+        "osmosisd",
+        "query",
+        "tx",
+        txhash,
+        "--node",
+        OSMOSIS_RPC,
+        "-o",
+        "json",
+    ]
+    for _ in range(max(1, attempts)):
+        code, out = run_list(cmd)
+        if code == 0 and out:
+            try:
+                data = json.loads(out)
+                tx_resp = data.get("tx_response") if isinstance(data, dict) else None
+                return True, tx_resp or data
+            except Exception:
+                return False, None
+        time.sleep(sleep_s)
+    return False, None
+
+
 def _parse_send_packet(data: dict) -> dict | None:
     """Parse send_packet event (packet sequence + channels) from an osmosisd tx JSON."""
     if not isinstance(data, dict):
@@ -2560,11 +2587,9 @@ def hotwallet_arkeo_to_native():
         "--node",
         OSMOSIS_RPC,
         "--gas",
-        "auto",
-        "--gas-adjustment",
-        "1.5",
-        "--gas-prices",
-        "0.025uosmo",
+        "500000",
+        "--fees",
+        "15000uosmo",
         "--broadcast-mode",
         "sync",
         "-y",
@@ -2610,6 +2635,13 @@ def hotwallet_arkeo_to_native():
         )
 
     start_arkeo_bal, _ = _arkeo_balance(arkeo_addr)
+    # Attempt inclusion check on Osmosis
+    tx_found, tx_resp = _query_osmo_tx(ibc_tx, attempts=6, sleep_s=2.0)
+    tx_code = None
+    tx_raw_log = None
+    if tx_resp:
+        tx_code = tx_resp.get("code")
+        tx_raw_log = tx_resp.get("raw_log")
     arrived, arkeo_final, arkeo_poll_errors = _wait_for_arkeo_balance_increase(
         arkeo_addr, amt_base, tolerance_bps=ARRIVAL_TOLERANCE_BPS, attempts=6, sleep_s=5, start_amt=start_arkeo_bal
     )
@@ -2629,6 +2661,9 @@ def hotwallet_arkeo_to_native():
             "arkeo_expected": amt_base,
             "arrival_confirmed": arrived,
             "arkeo_poll_errors": arkeo_poll_errors,
+            "osmo_included": tx_found,
+            "osmo_tx_code": tx_code,
+            "osmo_tx_raw_log": tx_raw_log,
         }
     )
 
@@ -2647,6 +2682,9 @@ def hotwallet_arkeo_to_native():
             "arkeo_expected": amt_base,
             "arrival_confirmed": arrived,
             "arkeo_poll_errors": arkeo_poll_errors,
+            "osmo_included": tx_found,
+            "osmo_tx_code": tx_code,
+            "osmo_tx_raw_log": tx_raw_log,
             "ibc_cmd": _mask_cmd_sensitive(ibc_cmd),
         }
     )
