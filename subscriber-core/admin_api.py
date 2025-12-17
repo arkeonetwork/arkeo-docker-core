@@ -6125,6 +6125,22 @@ class PaygProxyHandler(BaseHTTPRequestHandler):
             ip = ip.split(":")[0]
         return ip
 
+    def do_OPTIONS(self):
+        """Handle CORS preflight for proxy endpoints."""
+        try:
+            origin = self.headers.get("Origin")
+        except Exception:
+            origin = None
+        allow_headers = self.headers.get("Access-Control-Request-Headers", "*")
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", origin or "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", allow_headers)
+        self.send_header("Access-Control-Max-Age", "86400")
+        self.send_header("Access-Control-Allow-Credentials", "true")
+        self.end_headers()
+        self.close_connection = True
+
     def _send_json(self, status: int, payload: dict, extra_headers: dict | None = None):
         body_bytes = json.dumps(payload, indent=2).encode()
         self.send_response(status)
@@ -6230,6 +6246,14 @@ class PaygProxyHandler(BaseHTTPRequestHandler):
                     except Exception:
                         pass
                     payload["active_contract_detail"] = "Active contract found for the selected provider service."
+                    try:
+                        cid = active.get("id")
+                        if cid and client_pub_local:
+                            payload["contract_claims_url"] = f"{sentinel}/claims?contract_id={cid}&client={client_pub_local}"
+                        if cid:
+                            payload["contract_manage_url_hint"] = f"{sentinel}/manage/contract/{cid}"
+                    except Exception:
+                        pass
                     if provider_filter:
                         payload["provider_pubkey"] = provider_filter
                     try:
