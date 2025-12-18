@@ -2,7 +2,7 @@
 <html>
 <head>
     <meta charset="utf-8">
-    <title>Arkeo Marketplace | Sentinel Management</title>
+    <title>Arkeo Data Engine | Sentinel Management</title>
     <link rel="stylesheet" href="style.css">
     <link rel="icon" href="images/favicon.ico">
     <link rel="shortcut icon" href="images/favicon.ico">
@@ -25,9 +25,9 @@
             <div class="header-brand-row">
                 <img src="images/arkeo-logo-200px_1.png" alt="Arkeo" class="header-logo">
                 <div class="header-brand">
-                    <span class="brand-main">Arkeo Marketplace</span>
+                    <span class="brand-main">Arkeo Data Engine</span>
                     <span class="brand-sep">|</span>
-                    <span class="brand-sub">Provider Manager</span>
+                    <span class="brand-sub">Provider</span>
                 </div>
             </div>
             <h1>Sentinel Management</h1>
@@ -140,48 +140,62 @@
             </td>
         </tr>
         <tr>
-            <td class="label">
-                Provider Pubkey
-                <div class="hint">Bech32 provider pubkey used on-chain.</div>
+            <td colspan="2" class="no-border">
+                <div class="collapse-wrapper">
+                    <button id="readonlyToggle" type="button" class="collapse-toggle" aria-expanded="false" aria-controls="readonlySectionBody" onclick="toggleSentinelReadonlySection()">
+                        <span id="readonlyToggleIcon" class="collapse-icon">▸</span>
+                        <span>Default &amp; Derived</span>
+                    </button>
+                    <div id="readonlySectionBody" class="collapse-body sentinel-readonly-body hidden" aria-hidden="true">
+                        <table>
+                            <tr>
+                                <td class="label">
+                                    Provider Pubkey
+                                    <div class="hint">Bech32 provider pubkey used on-chain.</div>
+                                </td>
+                                <td class="value">
+                                    <span id="providerPubkey">(loading...)</span>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td class="label">
+                                    Listen Address
+                                    <div class="hint">Sentinel API listen address (read-only).</div>
+                                </td>
+                                <td class="value"><span id="listenAddr">(loading...)</span></td>
+                            </tr>
+                            <tr>
+                                <td class="label">
+                                    Sentinel URI
+                                    <div class="hint">Endpoint for the sentinel (External).</div>
+                                </td>
+                                <td class="value"><span id="sentinelUri">(loading...)</span></td>
+                            </tr>
+                            <tr>
+                                <td class="label">
+                                    Arkeod Node
+                                    <div class="hint">RPC endpoint sentinel watches for events.</div>
+                                </td>
+                                <td class="value"><span id="arkeodNode">(loading...)</span></td>
+                            </tr>
+                            <tr>
+                                <td class="label">
+                                    Hotwallet Key
+                                    <div class="hint">Configured provider key name.</div>
+                                </td>
+                                <td class="value"><span id="walletKey">(loading...)</span></td>
+                            </tr>
+                            <tr>
+                                <td class="label">
+                                    Hotwallet Pubkey
+                                    <div class="hint">Bech32 pubkey used on-chain.</div>
+                                </td>
+                                <td class="value"><span id="bech32Pubkey">(loading...)</span></td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
             </td>
-            <td class="value">
-                <span id="providerPubkey">(loading...)</span>
-            </td>
-        </tr>
-        <tr>
-            <td class="label">
-                Listen Address
-                <div class="hint">Sentinel API listen address (read-only).</div>
-            </td>
-            <td class="value"><span id="listenAddr">(loading...)</span></td>
-        </tr>
-        <tr>
-            <td class="label">
-                Sentinel URI
-                <div class="hint">Endpoint for the sentinel (External).</div>
-            </td>
-            <td class="value"><span id="sentinelUri">(loading...)</span></td>
-        </tr>
-        <tr>
-            <td class="label">
-                Arkeod Node
-                <div class="hint">RPC endpoint sentinel watches for events.</div>
-            </td>
-            <td class="value"><span id="arkeodNode">(loading...)</span></td>
-        </tr>
-        <tr>
-            <td class="label">
-                Hotwallet Key
-                <div class="hint">Configured provider key name.</div>
-            </td>
-            <td class="value"><span id="walletKey">(loading...)</span></td>
-        </tr>
-        <tr>
-            <td class="label">
-                Hotwallet Pubkey
-                <div class="hint">Bech32 pubkey used on-chain.</div>
-            </td>
-            <td class="value"><span id="bech32Pubkey">(loading...)</span></td>
         </tr>
         <tr>
             <td colspan="2" class="text-left pt-12 no-border">
@@ -197,9 +211,9 @@
         <div class="footer-brand">
             <img src="images/arkeo-logo-200px_1.png" alt="Arkeo" class="footer-logo">
             <span class="footer-title">
-                <span class="brand-main">Arkeo Marketplace</span>
+                <span class="brand-main">Arkeo Data Engine</span>
                 <span class="brand-sep">|</span>
-                <span class="brand-sub">Provider Manager</span>
+                <span class="brand-sub">Provider</span>
             </span>
         </div>
         <div class="footer-links-right">
@@ -210,25 +224,29 @@
 </div>
 
 <div class="card">
+    <div class="collapse-wrapper">
+        <button id="sentinelDebugToggle" type="button" class="collapse-toggle" aria-expanded="false" aria-controls="sentinelDebugSectionBody" onclick="toggleSentinelDebugSection()">
+            <span id="sentinelDebugToggleIcon" class="collapse-icon">▸</span>
+            <span>Debug</span>
+        </button>
+        <div id="sentinelDebugSectionBody" class="collapse-body sentinel-debug-body hidden" aria-hidden="true">
+            <button class="primary" onclick="loadInfo()">Refresh</button>
+            <pre id="sentinelMeta">(loading...)</pre>
+            <pre id="exportResult" class="pre-wrap"></pre>
 
-    <h3>Debug Info</h3>
+            <div class="panel mt-14">
+                <h3>Sentinel YAML</h3>
+                <div class="hint">provider + services from sentinel.yaml</div>
+                <pre id="sentinelYaml">(loading...)</pre>
+            </div>
 
-    <button class="primary" onclick="loadInfo()">Refresh</button>
-    <pre id="sentinelMeta">(loading...)</pre>
-    <pre id="exportResult" class="pre-wrap"></pre>
-
-    <div class="panel mt-14">
-        <h3>Sentinel YAML</h3>
-        <div class="hint">provider + services from sentinel.yaml</div>
-        <pre id="sentinelYaml">(loading...)</pre>
+            <div class="panel mt-14">
+                <h3>Sentinel Metadata</h3>
+                <div class="hint">metadata.json from the sentinel endpoint</div>
+                <pre id="debugInfo">Loading...</pre>
+            </div>
+        </div>
     </div>
-
-    <div class="panel mt-14">
-        <h3>Sentinel Metadata</h3>
-        <div class="hint">metadata.json from the sentinel endpoint</div>
-        <pre id="debugInfo">Loading...</pre>
-    </div>
-
 </div>
 
 <script>
@@ -360,6 +378,44 @@
             }
         }
         // fallback: keep existing adminApiBase
+    }
+
+    function toggleSentinelReadonlySection() {
+        const body = document.getElementById("readonlySectionBody");
+        const icon = document.getElementById("readonlyToggleIcon");
+        const toggle = document.getElementById("readonlyToggle");
+        if (!body) return;
+        const isHidden = body.classList.contains("hidden");
+        if (isHidden) {
+            body.classList.remove("hidden");
+            body.setAttribute("aria-hidden", "false");
+            if (icon) icon.textContent = "▼";
+            if (toggle) toggle.setAttribute("aria-expanded", "true");
+        } else {
+            body.classList.add("hidden");
+            body.setAttribute("aria-hidden", "true");
+            if (icon) icon.textContent = "▸";
+            if (toggle) toggle.setAttribute("aria-expanded", "false");
+        }
+    }
+
+    function toggleSentinelDebugSection() {
+        const body = document.getElementById("sentinelDebugSectionBody");
+        const icon = document.getElementById("sentinelDebugToggleIcon");
+        const toggle = document.getElementById("sentinelDebugToggle");
+        if (!body) return;
+        const isHidden = body.classList.contains("hidden");
+        if (isHidden) {
+            body.classList.remove("hidden");
+            body.setAttribute("aria-hidden", "false");
+            if (icon) icon.textContent = "▼";
+            if (toggle) toggle.setAttribute("aria-expanded", "true");
+        } else {
+            body.classList.add("hidden");
+            body.setAttribute("aria-hidden", "true");
+            if (icon) icon.textContent = "▸";
+            if (toggle) toggle.setAttribute("aria-expanded", "false");
+        }
     }
 
     async function loadInfo() {
@@ -586,9 +642,9 @@
 <div id="adminPasswordGate" class="overlay overlay-strong hidden">
     <div class="overlay-card password-card">
         <div class="password-title">
-            <span>Arkeo Data Marketplace</span>
+            <span>Arkeo Data Engine</span>
             <span class="sep">|</span>
-            <span class="sub">Provider Manager</span>
+            <span class="sub">Provider</span>
         </div>
         <form onsubmit="submitAdminPasswordGate(event); return false;">
             <div class="password-body">

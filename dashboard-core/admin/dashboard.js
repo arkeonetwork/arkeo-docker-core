@@ -1191,6 +1191,16 @@ docker run -d --name subscriber-core --restart=unless-stopped \\
         const val = parseFloat(dashboardInfo?.block_time_seconds || BLOCK_TIME_FALLBACK);
         return Number.isFinite(val) ? val : BLOCK_TIME_FALLBACK;
       }, [dashboardInfo]);
+      const buildEarnings = useCallback((provider) => {
+        const heightHint = rangeTotals?.latest_height ?? latestHeight;
+        const blockHint = rangeTotals?.block_time_seconds ?? blockTimeSeconds;
+        return {
+          daily: getEarningsByRange(provider, 'daily', latestHeight, blockTimeSeconds, heightHint, blockHint),
+          weekly: getEarningsByRange(provider, 'weekly', latestHeight, blockTimeSeconds, heightHint, blockHint),
+          monthly: getEarningsByRange(provider, 'monthly', latestHeight, blockTimeSeconds, heightHint, blockHint),
+          all_time: getEarningsByRange(provider, 'all_time', latestHeight, blockTimeSeconds, heightHint, blockHint),
+        };
+      }, [rangeTotals, latestHeight, blockTimeSeconds]);
       const normalizeProviders = useCallback((payload) => {
         const list = Array.isArray(payload?.providers) ? payload.providers : [];
         return list.map((p, idx) => {
@@ -1343,7 +1353,7 @@ docker run -d --name subscriber-core --restart=unless-stopped \\
         }
 
         return sorted;
-      }, [providers, serviceFilter, regionFilter, providerSearch, sortBy, showOffline]);
+      }, [providers, serviceFilter, regionFilter, providerSearch, sortBy, showOffline, regionGroups, timeRange, buildEarnings]);
 
   const serviceOptions = useMemo(() => {
     const map = new Map();
@@ -1399,21 +1409,10 @@ docker run -d --name subscriber-core --restart=unless-stopped \\
     };
   }, [filteredProviders, timeRange, serviceFilter, counts, latestHeight, blockTimeSeconds, serviceOptions, rangeTotals]);
 
-  const buildEarnings = (provider) => {
-    const heightHint = rangeTotals?.latest_height ?? latestHeight;
-    const blockHint = rangeTotals?.block_time_seconds ?? blockTimeSeconds;
-    return {
-      daily: getEarningsByRange(provider, 'daily', latestHeight, blockTimeSeconds, heightHint, blockHint),
-      weekly: getEarningsByRange(provider, 'weekly', latestHeight, blockTimeSeconds, heightHint, blockHint),
-      monthly: getEarningsByRange(provider, 'monthly', latestHeight, blockTimeSeconds, heightHint, blockHint),
-      all_time: getEarningsByRange(provider, 'all_time', latestHeight, blockTimeSeconds, heightHint, blockHint),
-    };
-  };
-
   const contractProviderEarnings = useMemo(() => {
     if (!contractProvider) return null;
     return buildEarnings(contractProvider);
-  }, [contractProvider, latestHeight, blockTimeSeconds, rangeTotals]);
+  }, [contractProvider, buildEarnings]);
 
   const chartRef = useRef(null);
   const chartInstanceRef = useRef(null);

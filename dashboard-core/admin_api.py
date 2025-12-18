@@ -8,7 +8,6 @@ import math
 from flask import Flask, jsonify, request
 
 from cache_fetcher import (
-    build_commands as cache_build_commands,
     ensure_cache_dir as cache_ensure_cache_dir,
     fetch_once as cache_fetch_once,
     STATUS_FILE as CACHE_STATUS_FILE,
@@ -347,8 +346,7 @@ def cache_refresh():
     """Trigger a one-time cache fetch for providers, contracts, and services."""
     try:
         cache_ensure_cache_dir()
-        commands = cache_build_commands()
-        results = cache_fetch_once(commands, record_status=True)
+        results = cache_fetch_once(record_status=True)
         providers_cache = _load_cached("active_providers")
         if providers_cache:
             results["active_providers"] = {"data": providers_cache, "exit_code": 0}

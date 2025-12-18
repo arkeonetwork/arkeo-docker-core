@@ -17,9 +17,9 @@
             <div class="header-brand-row">
                 <img src="images/arkeo-logo-200px_1.png" alt="Arkeo" class="header-logo">
                 <div class="header-brand">
-                    <span class="brand-main">Arkeo Data Marketplace</span>
+                    <span class="brand-main">Arkeo Data Engine</span>
                     <span class="brand-sep">|</span>
-                    <span class="brand-sub">Subscriber Manager</span>
+                    <span class="brand-sub">Subscriber</span>
                 </div>
             </div>
             <h1 id="headerMoniker"></h1>
@@ -447,7 +447,15 @@
     </div>
 </div>
 
-<div id="listenerLogs" class="section log-container"></div>
+<div class="section log-container">
+    <div class="collapsible debug-collapsible" onclick="toggleDebugLogs()" role="button" aria-expanded="false" style="display:flex; align-items:center; gap:6px; cursor:pointer; user-select:none;">
+        <span id="debugCaret">▸</span>
+        <strong>Debug</strong>
+    </div>
+    <div id="listenerLogsWrapper" class="collapsible-content" style="display:none;">
+        <div id="listenerLogs"></div>
+    </div>
+</div>
 
 <div id="resultModal" class="overlay hidden">
     <div class="overlay-card modal-card">
@@ -3037,6 +3045,20 @@
         }).join("");
         container.innerHTML = cards;
         listenersCache.forEach((l) => fetchListenerLog(l.id, `log-${l.id}`));
+    }
+
+    function toggleDebugLogs() {
+        const wrap = document.getElementById("listenerLogsWrapper");
+        const caret = document.getElementById("debugCaret");
+        if (!wrap || !caret) return;
+        const isHidden = wrap.style.display === "none" || wrap.style.display === "";
+        wrap.style.display = isHidden ? "block" : "none";
+        caret.textContent = isHidden ? "▾" : "▸";
+        const heading = document.querySelector(".debug-collapsible");
+        if (heading) heading.setAttribute("aria-expanded", isHidden ? "true" : "false");
+        if (isHidden) {
+            renderListenerLogs();
+        }
     }
 
     async function runListenerTests(id, runs = 1, titlePrefix, refreshAfter = false) {

@@ -26,7 +26,6 @@ CACHE_FETCH_INTERVAL = 0  # populated below via env
 STATUS_FILE = os.path.join(CACHE_DIR, "_sync_status.json")
 SUBSCRIBER_SETTINGS_PATH = os.path.join(CONFIG_DIR, "subscriber-settings.json")
 METADATA_CACHE_PATH = os.path.join(CACHE_DIR, "metadata.json")
-ALLOW_LOCALHOST_SENTINEL_URIS = str(os.getenv("ALLOW_LOCALHOST_SENTINEL_URIS") or "0").lower() in {"1", "true", "yes", "y", "on"}
 METADATA_TTL_SECONDS = int(os.getenv("METADATA_TTL_SECONDS", "3600"))  # 1 hour default
 MIN_SERVICE_BOND = int(os.getenv("MIN_SERVICE_BOND", "100000000"))  # 100_000_000 default
 SERVICE_TYPES_TTL_SECONDS = int(os.getenv("SERVICE_TYPES_TTL_SECONDS", "3600"))  # 1 hour default
@@ -226,7 +225,7 @@ def _is_external(uri: str | None) -> bool:
         if not parsed.scheme or not host:
             return False
         if host == "localhost" or host.startswith("127."):
-            return ALLOW_LOCALHOST_SENTINEL_URIS
+            return False
         return True
     except Exception:
         return False
@@ -245,7 +244,7 @@ def _is_localhost_uri(uri: str | None) -> bool:
 
 def _refresh_runtime_settings() -> None:
     """Reload ARKEOD_NODE from subscriber-settings.json if present."""
-    global ARKEOD_NODE, ALLOW_LOCALHOST_SENTINEL_URIS
+    global ARKEOD_NODE
     settings = {}
     try:
         with open(SUBSCRIBER_SETTINGS_PATH, "r", encoding="utf-8") as f:
@@ -253,10 +252,8 @@ def _refresh_runtime_settings() -> None:
     except Exception:
         settings = {}
     node_val = settings.get("ARKEOD_NODE") or os.getenv("ARKEOD_NODE") or os.getenv("EXTERNAL_ARKEOD_NODE") or ARKEOD_NODE
-    allow_local = settings.get("ALLOW_LOCALHOST_SENTINEL_URIS") or os.getenv("ALLOW_LOCALHOST_SENTINEL_URIS") or "0"
     if node_val:
         ARKEOD_NODE = str(node_val).strip()
-    ALLOW_LOCALHOST_SENTINEL_URIS = str(allow_local).lower() in {"1", "true", "yes", "y", "on"}
 
 
 def _env_int(name: str, default: int) -> int:
@@ -337,6 +334,8 @@ def _update_metadata_cache_from_providers(provider_services_payload: Dict[str, A
     prov_entries = []
     if isinstance(data, dict):
         prov_entries = data.get("providers") or data.get("provider") or []
+    elif isinstance(data, list):
+        prov_entries = data
     if not isinstance(prov_entries, list):
         prov_entries = []
 
@@ -346,6 +345,10 @@ def _update_metadata_cache_from_providers(provider_services_payload: Dict[str, A
         if not entry or not isinstance(entry, dict):
             return
         mu = entry.get("metadata_uri") or entry.get("metadataUri")
+        status_val = entry.get("status")
+        status_str = str(status_val).strip().lower() if status_val is not None else ""
+        if status_str not in {"online", "1", "true"} and status_val not in (1, True):
+            return  # skip offline/unknown services/providers
         if mu and _is_external(mu):
             uris.add(mu)
 
@@ -378,14 +381,20 @@ def _update_metadata_cache_from_providers(provider_services_payload: Dict[str, A
         if entry and not _is_stale(entry):
             continue
         data_val, err_val, status_val = fetch_metadata_uri(mu)
-        cache_map[mu] = {
-            "metadata_uri": mu,
-            "fetched_at": timestamp(),
-            "data": data_val if status_val == 1 else None,
-            "error": err_val if status_val != 1 else None,
-            "status": status_val,
-        }
-        changed = True
+        if status_val == 1:
+            cache_map[mu] = {
+                "metadata_uri": mu,
+                "fetched_at": timestamp(),
+                "data": data_val,
+                "error": None,
+                "status": status_val,
+            }
+            changed = True
+        else:
+            # Drop failed/invalid entries from cache so only valid metadata is persisted
+            if mu in cache_map:
+                cache_map.pop(mu, None)
+                changed = True
     if changed:
         _save_metadata_cache(cache_map)
     return cache_map
@@ -398,6 +407,8 @@ def build_providers_metadata(provider_payload: Dict[str, Any]) -> Dict[str, Any]
     data = provider_payload.get("data")
     if isinstance(data, dict):
         providers_list = data.get("providers") or data.get("provider") or []
+    elif isinstance(data, list):
+        providers_list = data
     if not isinstance(providers_list, list):
         providers_list = []
 
@@ -475,28 +486,20 @@ def build_providers_metadata(provider_payload: Dict[str, Any]) -> Dict[str, Any]
             provider_status_raw = str(prov_obj.get("status") or "").lower()
 
         if _is_external(mu):
-            if ALLOW_LOCALHOST_SENTINEL_URIS and _is_localhost_uri(mu):
-                # Skip fetching localhost metadata when allowed; treat as active and keep a fallback moniker
-                entry["metadata"] = None
-                entry["metadata_error"] = None
-                entry["status"] = 1
-                if pubkey and not entry.get("provider_moniker"):
-                    entry["provider_moniker"] = pubkey
+            if mu in url_cache:
+                meta_data_val, meta_err_val, status_val = url_cache[mu]
             else:
-                if mu in url_cache:
-                    meta_data_val, meta_err_val, status_val = url_cache[mu]
-                else:
-                    meta_data_val, meta_err_val, status_val = fetch_metadata_uri(mu)
-                    url_cache[mu] = (meta_data_val, meta_err_val, status_val)
-                entry["metadata"] = meta_data_val if status_val == 1 else None
-                entry["metadata_error"] = meta_err_val if status_val != 1 else None
-                entry["status"] = status_val
-                # Try to set provider_moniker from metadata if available
-                if not entry.get("provider_moniker") and isinstance(meta_data_val, dict):
-                    cfg = meta_data_val.get("config") if isinstance(meta_data_val.get("config"), dict) else {}
-                    moniker_val = cfg.get("moniker") or meta_data_val.get("moniker")
-                    if moniker_val:
-                        entry["provider_moniker"] = moniker_val
+                meta_data_val, meta_err_val, status_val = fetch_metadata_uri(mu)
+                url_cache[mu] = (meta_data_val, meta_err_val, status_val)
+            entry["metadata"] = meta_data_val if status_val == 1 else None
+            entry["metadata_error"] = meta_err_val if status_val != 1 else None
+            entry["status"] = status_val
+            # Try to set provider_moniker from metadata if available
+            if not entry.get("provider_moniker") and isinstance(meta_data_val, dict):
+                cfg = meta_data_val.get("config") if isinstance(meta_data_val.get("config"), dict) else {}
+                moniker_val = cfg.get("moniker") or meta_data_val.get("moniker")
+                if moniker_val:
+                    entry["provider_moniker"] = moniker_val
         else:
             # No external metadata_uri; cannot mark active
             entry["metadata"] = None
@@ -519,36 +522,22 @@ def build_providers_metadata(provider_payload: Dict[str, Any]) -> Dict[str, Any]
         "fetched_at": timestamp(),
         "source": "provider-services",
         "providers": active_only,
-        "metadata_uri_sources": {
-            "allow_localhost": ALLOW_LOCALHOST_SENTINEL_URIS,
-            "node": ARKEOD_NODE,
-            "rest_api": None,
-        },
     }
     out["_duration_sec"] = round(time.time() - t_start, 3)
     return out
 
 
-def build_active_services(provider_services_payload: Dict[str, Any], active_providers_payload: Dict[str, Any], metadata_cache: dict[str, Any] | None = None) -> Dict[str, Any]:
+def build_active_services(provider_services_payload: Dict[str, Any], metadata_cache: dict[str, Any] | None = None) -> Dict[str, Any]:
     """
-    Build active_services.json by selecting ONLINE services whose provider is active, metadata is cached, and bond meets threshold.
+    Build active_services.json directly from provider-services by selecting ONLINE providers/services with cached metadata.
     """
     t_start = time.time()
-    active_prov_lookup = set()
-    providers_list = active_providers_payload.get("providers") if isinstance(active_providers_payload, dict) else []
-    if isinstance(providers_list, list):
-        for p in providers_list:
-            if not isinstance(p, dict):
-                continue
-            status = p.get("status")
-            if status == 1 or status == "1":
-                pk = p.get("pubkey") or p.get("pub_key") or p.get("pubKey")
-                if pk:
-                    active_prov_lookup.add(pk)
     data = provider_services_payload.get("data") if isinstance(provider_services_payload, dict) else {}
     prov_entries = []
     if isinstance(data, dict):
         prov_entries = data.get("providers") or data.get("provider") or []
+    elif isinstance(data, list):
+        prov_entries = data
     if not isinstance(prov_entries, list):
         prov_entries = []
 
@@ -559,11 +548,11 @@ def build_active_services(provider_services_payload: Dict[str, Any], active_prov
         if not isinstance(entry, dict):
             continue
         pk = entry.get("pub_key") or entry.get("pubkey") or entry.get("pubKey")
-        if not pk or (active_prov_lookup and pk not in active_prov_lookup):
+        if not pk:
             continue
         status_val = entry.get("status")
         status_str = str(status_val).strip().lower() if status_val is not None else ""
-        if status_str != "online" and status_val not in (1, True, "1"):
+        if status_str not in {"online", "1"} and status_val not in (1, True):
             continue
         mu = entry.get("metadata_uri") or entry.get("metadataUri")
         if not mu or not _is_external(mu):
@@ -581,15 +570,41 @@ def build_active_services(provider_services_payload: Dict[str, Any], active_prov
         if bond_int < MIN_SERVICE_BOND:
             continue
 
-        active_services.append(
-            {
-                "provider_pubkey": pk,
-                "service_id": entry.get("service_id") or entry.get("id") or entry.get("service"),
-                "service": entry.get("service") or entry.get("name"),
-                "metadata_uri": mu,
-                "raw": entry,
-            }
-        )
+        # Services list may be nested; if absent, still emit the provider-level service if present
+        services_field = []
+        if isinstance(entry.get("services"), list):
+            services_field = entry["services"]
+        elif isinstance(entry.get("service"), list):
+            services_field = entry["service"]
+        if services_field:
+            for svc in services_field:
+                if not isinstance(svc, dict):
+                    continue
+                svc_status = svc.get("status")
+                svc_status_str = str(svc_status).strip().lower() if svc_status is not None else ""
+                if svc_status_str not in {"online", "1"} and svc_status not in (1, True):
+                    continue
+                active_services.append(
+                    {
+                        "provider_pubkey": pk,
+                        "service_id": svc.get("service_id") or svc.get("id") or svc.get("service"),
+                        "service": svc.get("service") or svc.get("name"),
+                        "metadata_uri": mu,
+                        "metadata": meta_entry.get("data") if isinstance(meta_entry, dict) else None,
+                        "raw": svc,
+                    }
+                )
+        else:
+            active_services.append(
+                {
+                    "provider_pubkey": pk,
+                    "service_id": entry.get("service_id") or entry.get("id") or entry.get("service"),
+                    "service": entry.get("service") or entry.get("name"),
+                    "metadata_uri": mu,
+                    "metadata": meta_entry.get("data") if isinstance(meta_entry, dict) else None,
+                    "raw": entry,
+                }
+            )
 
     out = {
         "fetched_at": timestamp(),
@@ -618,6 +633,8 @@ def build_active_providers_from_active_services(active_services_payload: Dict[st
     prov_entries = []
     if isinstance(data, dict):
         prov_entries = data.get("providers") or data.get("provider") or []
+    elif isinstance(data, list):
+        prov_entries = data
     if not isinstance(prov_entries, list):
         prov_entries = []
 
@@ -633,25 +650,18 @@ def build_active_providers_from_active_services(active_services_payload: Dict[st
         if not pk or pk not in active_provider_pks or pk in seen_pubkeys:
             continue
 
-        status_val = p.get("status")
-        status_str = str(status_val).strip().lower() if status_val is not None else ""
-        if status_str != "online" and status_val not in (1, True, "1", "ONLINE", "online"):
-            continue
-
         mu = p.get("metadata_uri") or p.get("metadataUri")
         if not mu or not _is_external(mu):
             continue
 
         meta_entry = meta_cache.get(mu)
         meta_ok = bool(meta_entry)
-        meta_flag = bool(p.get("metadata_uri_active")) or (_is_localhost_uri(mu) and ALLOW_LOCALHOST_SENTINEL_URIS)
-        # Require cached metadata and an active flag (or allowed localhost toggle).
-        if not meta_ok or not meta_flag:
+        if not meta_ok:
             continue
 
         entry = dict(p)
         entry["provider_pubkey"] = pk
-        entry["metadata_uri_active"] = bool(meta_flag and meta_ok)
+        entry["metadata_uri_active"] = True
         entry["metadata"] = meta_entry.get("data")
         # Prefer moniker from metadata when available.
         meta_val = entry["metadata"]
@@ -670,11 +680,6 @@ def build_active_providers_from_active_services(active_services_payload: Dict[st
         "fetched_at": timestamp(),
         "source": "active_services",
         "providers": providers,
-        "metadata_uri_sources": {
-            "allow_localhost": ALLOW_LOCALHOST_SENTINEL_URIS,
-            "node": ARKEOD_NODE,
-            "rest_api": None,
-        },
         "debug_counts": {
             "active_services": len(active_services),
             "providers_seen": providers_seen,
@@ -994,10 +999,7 @@ def fetch_once(commands: Dict[str, List[str]] | None = None, record_status: bool
     results: Dict[str, Dict[str, Any]] = {}
     _refresh_runtime_settings()
     loop_start = time.time()
-    print(
-        f"[cache] fetch_once start node={ARKEOD_NODE} allow_localhost={ALLOW_LOCALHOST_SENTINEL_URIS}",
-        flush=True,
-    )
+    print(f"[cache] fetch_once start node={ARKEOD_NODE}", flush=True)
     commands = build_commands()
     start_ts = timestamp()
     if record_status:
@@ -1032,7 +1034,12 @@ def fetch_once(commands: Dict[str, List[str]] | None = None, record_status: bool
                 try:
                     active_uris = set(metadata_cache.keys()) if metadata_cache else set()
                     data_block = payload.get("data")
-                    prov_entries = data_block.get("providers") or data_block.get("provider") if isinstance(data_block, dict) else []
+                    if isinstance(data_block, dict):
+                        prov_entries = data_block.get("providers") or data_block.get("provider") or []
+                    elif isinstance(data_block, list):
+                        prov_entries = data_block
+                    else:
+                        prov_entries = []
                     if isinstance(prov_entries, list):
                         for p in prov_entries:
                             if not isinstance(p, dict):
@@ -1064,33 +1071,30 @@ def fetch_once(commands: Dict[str, List[str]] | None = None, record_status: bool
                 metadata_cache = {}
         if metadata_cache is not None:
             results["metadata"] = {"metadata": metadata_cache, "exit_code": 0}
-        # Derive active_providers.json directly from provider-services (with metadata)
+        # Derive active_services.json first, directly from provider-services + metadata cache
+        active_services_payload = None
         active_providers_payload = None
         if "provider-services" in results and results["provider-services"].get("exit_code") == 0:
             t0 = time.time()
-            active_providers_payload = build_providers_metadata(results["provider-services"])
-            write_cache("active_providers", active_providers_payload)
-            results["active_providers"] = active_providers_payload
-            stage_times["active_providers_build"] = time.time() - t0
-        else:
-            print("[cache] skip active_providers_build (provider-services failed)", flush=True)
-        # Derive active_services.json using active_providers and metadata cache
-        active_services_payload = None
-        if "provider-services" in results and results["provider-services"].get("exit_code") == 0 and active_providers_payload is not None:
-            t0 = time.time()
-            active_services_payload = build_active_services(results["provider-services"], active_providers_payload or {}, metadata_cache or {})
+            active_services_payload = build_active_services(results["provider-services"], metadata_cache or {})
             write_cache("active_services", active_services_payload)
             results["active_services"] = active_services_payload
+            stage_times["active_services_build"] = time.time() - t0
+            # Derive active_providers.json from active_services
+            t1 = time.time()
+            active_providers_payload = build_active_providers_from_active_services(active_services_payload, results["provider-services"], metadata_cache or {})
+            write_cache("active_providers", active_providers_payload)
+            results["active_providers"] = active_providers_payload
+            stage_times["active_providers_build"] = time.time() - t1
             # Derive active_service_types.json if service-types cache exists
             if "service-types" in results and results["service-types"].get("exit_code") == 0:
-                t1 = time.time()
+                t2 = time.time()
                 ast_payload = build_active_service_types(active_services_payload, results["service-types"])
                 write_cache("active_service_types", ast_payload)
                 results["active_service_types"] = ast_payload
-                stage_times["active_service_types_build"] = time.time() - t1
-            stage_times["active_services_build"] = time.time() - t0
+                stage_times["active_service_types_build"] = time.time() - t2
         else:
-            print("[cache] skip active_services_build (prereqs failed)", flush=True)
+            print("[cache] skip active_services/active_providers_build (provider-services failed)", flush=True)
         # Derive subscribers.json from provider-contracts if available
         if "provider-contracts" in results and results["provider-contracts"].get("exit_code") == 0:
             t0 = time.time()
