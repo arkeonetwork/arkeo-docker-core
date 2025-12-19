@@ -168,6 +168,19 @@ a { color: var(--blue-accent); }
     text-align: center;
     padding: 30px 10px;
 }
+.filter-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.filter-row select {
+    background: #0b1220;
+    border: 1px solid var(--border-strong);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 6px 8px;
+    min-width: 120px;
+}
 
 .btn {
     display: inline-block;
@@ -594,6 +607,12 @@ pre {
     font-size: 16px;
 }
 #claimToggle {
+    font-size: 16px;
+}
+#providerReadonlyToggle {
+    font-size: 16px;
+}
+.provider-readonly-body {
     font-size: 16px;
 }
 .collapse-toggle:focus-visible {

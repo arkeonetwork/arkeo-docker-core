@@ -133,25 +133,6 @@
             </tr>
             <tr>
                 <td class="label">
-                    Current Bond Amount
-                    <div class="hint">The minimum total bond amount is 100000000uarkeo.</div>
-                </td>
-                <td class="value">
-                    <span id="currentBondAmountLabel">–</span>
-                </td>
-            </tr>
-            <tr>
-                <td class="label">
-                    Sentinel URI
-                    <div class="hint">The URI and port for the sentinel service for your provider.</div>
-                </td>
-                <td class="value">
-                    <div id="sentinelUriDisplay" class="muted"></div>
-                    <input type="hidden" id="sentinelUri" />
-                </td>
-            </tr>
-            <tr>
-                <td class="label">
                     Location
                     <div class="hint">Select the region for this service.</div>
                 </td>
@@ -217,49 +198,82 @@
                 </td>
             </tr>
             <tr>
-                <td class="label">
-                    Hotwallet Key
-                    <div class="hint">The hot wallet key used.</div>
-                </td>
-                <td class="value">
-                    <span id="walletKey">(loading...)</span>
-                </td>
-            </tr>
-            <tr>
-                <td class="label">
-                    Hotwallet Key Backend
-                    <div class="hint">The keyring backend used.</div>
-                </td>
-                <td class="value">
-                    <span id="bondKeyringLabel">test</span>
-                </td>
-            </tr>
-            <tr>
-                <td class="label">
-                    Hotwallet Pubkey
-                    <div class="hint">The pubkey shown on the blockchain contracts.</div>
-                </td>
-                <td class="value">
-                    <span id="bech32PubkeyLabel">(pending)</span>
-                </td>
-            </tr>
-            <tr>
-                <td class="label">
-                    Bond Fees
-                    <div class="hint">Default bond fees.</div>
-                </td>
-                <td class="value">
-                    <span id="bondFeesLabel">200uarkeo</span>
-                </td>
-            </tr>
-            <tr>
-                <td class="label">
-                    Mod Nonce
-                    <div class="hint">Used to increment updates.</div>
-                </td>
-                <td class="value">
-                    <span id="metadataNonceLabel">1</span>
-                    <input type="hidden" id="metadataNonceHidden" value="1" />
+                <td colspan="2" class="no-border">
+                    <div class="collapse-wrapper">
+                        <button id="providerReadonlyToggle" type="button" class="collapse-toggle" aria-expanded="false" aria-controls="providerReadonlyBody" onclick="toggleProviderReadonlySection()">
+                            <span id="providerReadonlyIcon" class="collapse-icon">▸</span>
+                            <span>Defaults &amp; Derived</span>
+                        </button>
+                        <div id="providerReadonlyBody" class="collapse-body provider-readonly-body hidden" aria-hidden="true">
+                            <table>
+                                <tr>
+                                    <td class="label">
+                                        Current Bond Amount
+                                        <div class="hint">The minimum total bond amount is 100000000uarkeo.</div>
+                                    </td>
+                                    <td class="value">
+                                        <span id="currentBondAmountLabel">–</span>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td class="label">
+                                        Sentinel URI
+                                        <div class="hint">The URI and port for the sentinel service for your provider.</div>
+                                    </td>
+                                    <td class="value">
+                                        <div id="sentinelUriDisplay" class="muted"></div>
+                                        <input type="hidden" id="sentinelUri" />
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td class="label">
+                                        Hotwallet Key
+                                        <div class="hint">The hot wallet key used.</div>
+                                    </td>
+                                    <td class="value">
+                                        <span id="walletKey">(loading...)</span>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td class="label">
+                                        Hotwallet Key Backend
+                                        <div class="hint">The keyring backend used.</div>
+                                    </td>
+                                    <td class="value">
+                                        <span id="bondKeyringLabel">test</span>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td class="label">
+                                        Hotwallet Pubkey
+                                        <div class="hint">The pubkey shown on the blockchain contracts.</div>
+                                    </td>
+                                    <td class="value">
+                                        <span id="bech32PubkeyLabel">(pending)</span>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td class="label">
+                                        Bond Fees
+                                        <div class="hint">Default bond fees.</div>
+                                    </td>
+                                    <td class="value">
+                                        <span id="bondFeesLabel">200uarkeo</span>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td class="label">
+                                        Mod Nonce
+                                        <div class="hint">Used to increment updates.</div>
+                                    </td>
+                                    <td class="value">
+                                        <span id="metadataNonceLabel">1</span>
+                                        <input type="hidden" id="metadataNonceHidden" value="1" />
+                                    </td>
+                                </tr>
+                            </table>
+                        </div>
+                    </div>
                 </td>
             </tr>
         </table>
@@ -332,6 +346,25 @@
     function setAdminHost(candidateHost) {
         // Do not override adminApiBase; keep using the page host for API calls
         return;
+    }
+
+    function toggleProviderReadonlySection() {
+        const body = document.getElementById("providerReadonlyBody");
+        const icon = document.getElementById("providerReadonlyIcon");
+        const toggle = document.getElementById("providerReadonlyToggle");
+        if (!body) return;
+        const isHidden = body.classList.contains("hidden");
+        if (isHidden) {
+            body.classList.remove("hidden");
+            body.setAttribute("aria-hidden", "false");
+            if (icon) icon.textContent = "▼";
+            if (toggle) toggle.setAttribute("aria-expanded", "true");
+        } else {
+            body.classList.add("hidden");
+            body.setAttribute("aria-hidden", "true");
+            if (icon) icon.textContent = "▸";
+            if (toggle) toggle.setAttribute("aria-expanded", "false");
+        }
     }
 
     function resolveApi(path) {
