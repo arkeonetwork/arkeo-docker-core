@@ -44,6 +44,7 @@ LISTENER_PORT_CONFIG = os.path.join(CACHE_DIR, "listener_port_config.json")
 ACTIVE_SERVICE_TYPES_FILE = os.path.join(CACHE_DIR, "active_service_types.json")
 SUBSCRIBER_INFO_FILE = os.path.join(CACHE_DIR, "subscriber_info.json")
 LOG_DIR = os.path.join(CACHE_DIR, "logs")
+NONCE_STORE_DIR = os.path.join(CACHE_DIR, "nonce_store")
 ADMIN_PASSWORD_PATH = os.getenv("ADMIN_PASSWORD_PATH") or (
     os.path.join(CACHE_DIR or "/app/cache", "admin_password.txt")
 )
@@ -54,6 +55,7 @@ ADMIN_UI_ORIGIN = os.getenv("ADMIN_UI_ORIGIN") or "http://localhost:8079"
 ADMIN_SESSIONS: dict[str, float] = {}
 _LISTENER_SERVERS: dict[int, dict] = {}
 _LISTENER_LOCK = threading.Lock()
+_LISTENERS_RW_LOCK = threading.RLock()
 _PORT_FLOOR = None
 HOTWALLET_LOG = os.path.join(CACHE_DIR, "logs", "hotwallet-tx.log")
 AXELAR_CONFIG_CACHE = os.path.join(CONFIG_DIR, "axelar", "eth-mainnet.json")
@@ -185,6 +187,10 @@ class WorkItem:
 class NonceStore:
     def __init__(self, path: str):
         self.path = path
+        try:
+            Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
         self.lock = threading.Lock()
         self.nonce = self._load()
 
@@ -199,6 +205,7 @@ class NonceStore:
     def _save(self, val: int) -> None:
         tmp = f"{self.path}.tmp"
         try:
+            Path(self.path).parent.mkdir(parents=True, exist_ok=True)
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump({"nonce": val}, f)
             os.replace(tmp, self.path)
@@ -4440,6 +4447,29 @@ def _write_listeners(data: dict) -> None:
                 pass
 
 
+def _update_listeners_atomic(mutator) -> dict:
+    """
+    Atomically read-modify-write listeners.json under an in-process lock.
+
+    mutator(data) should return True if it modified the payload (so we should write),
+    otherwise False.
+    """
+    with _LISTENERS_RW_LOCK:
+        data = _ensure_listeners_file()
+        changed = False
+        try:
+            changed = bool(mutator(data))
+        except Exception:
+            changed = False
+        if changed:
+            try:
+                data["fetched_at"] = _timestamp()
+            except Exception:
+                pass
+            _write_listeners(data)
+        return data
+
+
 def _normalize_top_services(entries) -> list[dict]:
     """Normalize top_services entries to the current on-disk shape."""
     normalized: list[dict] = []
@@ -4456,19 +4486,51 @@ def _normalize_top_services(entries) -> list[dict]:
         # keep service id for dedup/lookup, but avoid padding with empty string
         if svc not in (None, ""):
             entry["service_id"] = str(svc)
-        # Persist only dynamic/runtime fields; static metadata is hydrated from caches.
+        # Persist dynamic/runtime fields; static metadata is hydrated from caches.
         for key in (
             "status",
             "status_updated_at",
+            # Response-time metrics (computed by proxy lane)
             "rt_avg_ms",
             "rt_count",
             "rt_last_ms",
             "rt_updated_at",
+            # Polling warm-up: skip the first metric sample after reset-metrics.
+            "rt_ignore_next",
+            # Contract/config status (set by proxy path and surfaced in UI)
+            "last_contract_id",
+            "last_cors_origins",
+            "cors_configured",
         ):
             if key in item:
                 entry[key] = item.get(key)
         normalized.append(entry)
     return normalized
+
+
+def _merge_top_services_persisted_fields(existing: list, incoming: list) -> list[dict]:
+    """Merge persisted per-provider fields from existing top_services into incoming top_services."""
+    existing_by_pk: dict[str, dict] = {}
+    for e in existing if isinstance(existing, list) else []:
+        if not isinstance(e, dict):
+            continue
+        pk = e.get("provider_pubkey") or e.get("pubkey")
+        if pk:
+            existing_by_pk[str(pk)] = e
+
+    merged: list[dict] = []
+    for item in incoming if isinstance(incoming, list) else []:
+        if not isinstance(item, dict):
+            continue
+        out = dict(item)
+        pk = out.get("provider_pubkey") or out.get("pubkey")
+        src = existing_by_pk.get(str(pk)) if pk is not None else None
+        if isinstance(src, dict):
+            for key in ("last_contract_id", "last_cors_origins", "cors_configured", "rt_ignore_next"):
+                if key not in out and key in src:
+                    out[key] = src.get(key)
+        merged.append(out)
+    return merged
 
 
 def _provider_moniker_from_meta(p: dict | None) -> str | None:
@@ -4804,6 +4866,8 @@ def _start_listener_server(listener: dict) -> tuple[bool, str | None]:
     srv.last_code = None
     srv.last_nonce = None
     srv.cors_configured = cfg.get("last_contracts") or {}
+    # Warmup flag for response-time metrics (first successful request after (re)start is ignored).
+    srv.metrics_warm = False
     # In-memory caches used by the lane worker
     srv.contract_cache = {}
     srv.nonce_stores = {}
@@ -5196,12 +5260,11 @@ def _set_top_service_status(listener_id: str | None, provider_pubkey: str | None
     """Persist status for a provider entry inside listeners.json top_services."""
     if not listener_id or not provider_pubkey or status is None:
         return
-    try:
-        data = _ensure_listeners_file()
+
+    def _mut(data: dict) -> bool:
         listeners = data.get("listeners") if isinstance(data, dict) else []
         if not isinstance(listeners, list):
-            return
-        changed = False
+            return False
         for l in listeners:
             if not isinstance(l, dict):
                 continue
@@ -5209,35 +5272,47 @@ def _set_top_service_status(listener_id: str | None, provider_pubkey: str | None
                 continue
             ts = l.get("top_services")
             if not isinstance(ts, list):
-                continue
+                return False
             for entry in ts:
                 if not isinstance(entry, dict):
                     continue
                 if str(entry.get("provider_pubkey")) != str(provider_pubkey):
                     continue
-                if entry.get("status") != status:
-                    entry["status"] = status
-                    entry["status_updated_at"] = _timestamp()
-                    changed = True
-                break
-            break
-        if changed:
-            _write_listeners(data)
+                if entry.get("status") == status:
+                    return False
+                entry["status"] = status
+                entry["status_updated_at"] = _timestamp()
+                l["updated_at"] = _timestamp()
+                return True
+            return False
+        return False
+
+    try:
+        _update_listeners_atomic(_mut)
     except Exception:
         pass
 
 
-def _update_top_service_metrics(listener_id: str | None, provider_pubkey: str | None, response_time_sec: float | None):
-    """Incrementally update avg response time for a provider entry in listeners.json."""
+def _update_top_service_metrics(
+    listener_id: str | None,
+    provider_pubkey: str | None,
+    response_time_sec: float | None,
+    include_in_avg: bool = True,
+):
+    """
+    Update response-time fields for a provider entry in listeners.json.
+
+    - Always stores the last observed timing (rt_last_ms).
+    - Updates avg/count only when include_in_avg=True and warmup is not active.
+    """
     if not listener_id or not provider_pubkey or response_time_sec is None:
         return
-    try:
-        data = _ensure_listeners_file()
+    rt_ms = int(response_time_sec * 1000)
+
+    def _mut(data: dict) -> bool:
         listeners = data.get("listeners") if isinstance(data, dict) else []
         if not isinstance(listeners, list):
-            return
-        changed = False
-        rt_ms = int(response_time_sec * 1000)
+            return False
         for l in listeners:
             if not isinstance(l, dict):
                 continue
@@ -5245,25 +5320,43 @@ def _update_top_service_metrics(listener_id: str | None, provider_pubkey: str | 
                 continue
             ts = l.get("top_services")
             if not isinstance(ts, list):
-                continue
+                return False
             for entry in ts:
                 if not isinstance(entry, dict):
                     continue
                 if str(entry.get("provider_pubkey")) != str(provider_pubkey):
                     continue
+                # Always store the last observed timing (even if we don't include it in avg/count).
+                entry["rt_last_ms"] = rt_ms
+                entry["rt_updated_at"] = _timestamp()
+                l["updated_at"] = _timestamp()
+
+                # When polling, we reset metrics and mark the next sample as a warm-up (per provider).
+                # Consume the flag here so it survives UI reorders and avoids double-counting.
+                try:
+                    ign = entry.get("rt_ignore_next")
+                    if ign is not None and str(ign).strip().lower() not in ("0", "false", "no", "off", ""):
+                        entry.pop("rt_ignore_next", None)
+                        return True
+                except Exception:
+                    entry.pop("rt_ignore_next", None)
+                    return True
+
+                # Do not update avg/count for samples that are excluded (e.g., config failed).
+                if not include_in_avg:
+                    return True
                 cnt = _safe_int(entry.get("rt_count"), 0)
                 avg = float(entry.get("rt_avg_ms") or 0)
                 new_cnt = cnt + 1
                 new_avg = ((avg * cnt) + rt_ms) / new_cnt if new_cnt else rt_ms
                 entry["rt_avg_ms"] = new_avg
                 entry["rt_count"] = new_cnt
-                entry["rt_last_ms"] = rt_ms
-                entry["rt_updated_at"] = _timestamp()
-                changed = True
-                break
-            break
-        if changed:
-            _write_listeners(data)
+                return True
+            return False
+        return False
+
+    try:
+        _update_listeners_atomic(_mut)
     except Exception:
         pass
 
@@ -5278,42 +5371,39 @@ def _update_top_service_contract(
     """Persist last contract id/origins per provider entry in listeners.json (best effort)."""
     if not listener_id or provider_pubkey is None or contract_id is None:
         return
-    try:
-        data = _ensure_listeners_file()
+    cid = str(contract_id)
+
+    def _mut(data: dict) -> bool:
         listeners = data.get("listeners") if isinstance(data, dict) else []
+        if not isinstance(listeners, list):
+            return False
+        for l in listeners:
+            if not isinstance(l, dict):
+                continue
+            if str(l.get("id")) != str(listener_id):
+                continue
+            ts = l.get("top_services")
+            if not isinstance(ts, list):
+                return False
+            for entry in ts:
+                if not isinstance(entry, dict):
+                    continue
+                if str(entry.get("provider_pubkey")) != str(provider_pubkey):
+                    continue
+                entry["last_contract_id"] = cid
+                if origins is not None:
+                    entry["last_cors_origins"] = origins
+                if cors_configured is not None:
+                    entry["cors_configured"] = bool(cors_configured)
+                l["updated_at"] = _timestamp()
+                return True
+            return False
+        return False
+
+    try:
+        _update_listeners_atomic(_mut)
     except Exception:
-        return
-    if not isinstance(listeners, list):
-        return
-    changed = False
-    for l in listeners:
-        if not isinstance(l, dict):
-            continue
-        if str(l.get("id")) != str(listener_id):
-            continue
-        ts = l.get("top_services")
-        if not isinstance(ts, list):
-            continue
-        for entry in ts:
-            if not isinstance(entry, dict):
-                continue
-            if str(entry.get("provider_pubkey")) != str(provider_pubkey):
-                continue
-            entry["last_contract_id"] = str(contract_id)
-            if origins is not None:
-                entry["last_cors_origins"] = origins
-            if cors_configured is not None:
-                entry["cors_configured"] = bool(cors_configured)
-            l["updated_at"] = _timestamp()
-            changed = True
-            break
-        break
-    if changed:
-        try:
-            data["listeners"] = listeners
-            _write_listeners(data)
-        except Exception:
-            pass
+        pass
 
 
 def _lookup_settlement_duration(provider_pubkey: str | None, service_id: str | int | None) -> str | None:
@@ -5619,7 +5709,7 @@ def _peek_nonce_cache(contract_id: str, client_pub: str) -> int | None:
 def _nonce_store_path(listener_id: str | None, contract_id: str | None) -> str:
     lid = str(listener_id or "listener")
     cid = str(contract_id or "contract")
-    return os.path.join(CACHE_DIR, f"nonce_store_{lid}_{cid}.json")
+    return os.path.join(NONCE_STORE_DIR, f"nonce_store_{lid}_{cid}.json")
 
 
 def _handle_forward_lane(work: WorkItem, cfg: dict) -> dict:
@@ -5783,6 +5873,21 @@ def _handle_forward_lane(work: WorkItem, cfg: dict) -> dict:
                     cfg_create["create_settlement"] = cand.get("settlement_duration")
             except Exception:
                 pass
+            # Align pay-as-you-go rate if advertised.
+            try:
+                rate_info = cand.get("pay_as_you_go_rate")
+                if isinstance(rate_info, dict) and rate_info.get("amount"):
+                    amt = str(rate_info.get("amount"))
+                    denom = str(rate_info.get("denom") or "")
+                    cfg_create["create_rate"] = f"{amt}{denom}"
+            except Exception:
+                pass
+            # Align QPM if advertised.
+            try:
+                if cand.get("queries_per_minute") is not None:
+                    cfg_create["create_qpm"] = cand.get("queries_per_minute")
+            except Exception:
+                pass
             start_height = cur_height or _get_current_height(node)
             try:
                 _log(
@@ -5854,8 +5959,12 @@ def _handle_forward_lane(work: WorkItem, cfg: dict) -> dict:
             pass
 
         # ---- Configure CORS on the contract (best-effort, only when needed)
+        cors_ok: bool | None = None
+        cors_ms = 0
         desired_origins = cfg.get("cors_allowed_origins")
         if desired_origins is not None:
+            cors_start = time.time()
+            cors_ok = False
             try:
                 state = getattr(server_ref, "cors_configured", {}) if server_ref is not None else cfg.get("last_contracts") or {}
                 entry = state.get(provider_filter) if isinstance(state, dict) else None
@@ -5865,11 +5974,16 @@ def _handle_forward_lane(work: WorkItem, cfg: dict) -> dict:
                     and bool(entry.get("cors_configured"))
                     and entry.get("cors_origins") == desired_origins
                 )
-                if not already:
+                if already:
+                    cors_ok = True
+                    # Best-effort: ensure listeners.json reflects configured state.
+                    _update_top_service_contract(listener_id, provider_filter, cid, desired_origins, cors_configured=True)
+                else:
                     ok_cors, cors_err = _configure_contract_cors(
                         cid, sentinel, client_key, desired_origins, sign_template=sign_template
                     )
                     if ok_cors:
+                        cors_ok = True
                         _log("info", f"cors_configured provider={provider_filter} contract_id={cid} origins={desired_origins}")
                         if server_ref is not None and isinstance(server_ref.cors_configured, dict):
                             server_ref.cors_configured[provider_filter] = {
@@ -5879,9 +5993,22 @@ def _handle_forward_lane(work: WorkItem, cfg: dict) -> dict:
                             }
                         _update_top_service_contract(listener_id, provider_filter, cid, desired_origins, cors_configured=True)
                     else:
+                        cors_ok = False
                         _log("warning", f"cors_config_failed provider={provider_filter} contract_id={cid} err={cors_err}")
+                        if server_ref is not None and isinstance(server_ref.cors_configured, dict):
+                            server_ref.cors_configured[provider_filter] = {
+                                "contract_id": cid,
+                                "cors_origins": desired_origins,
+                                "cors_configured": False,
+                            }
+                        _update_top_service_contract(listener_id, provider_filter, cid, desired_origins, cors_configured=False)
             except Exception:
                 pass
+            finally:
+                try:
+                    cors_ms = int((time.time() - cors_start) * 1000)
+                except Exception:
+                    cors_ms = 0
 
         # ---- Per-contract nonce store
         nonce_store = None
@@ -6056,6 +6183,8 @@ def _handle_forward_lane(work: WorkItem, cfg: dict) -> dict:
                     "total_ms": total_ms,
                     "contract_fetch_ms": contract_fetch_ms,
                     "contract_select_ms": contract_select_ms,
+                    "cors_ms": cors_ms,
+                    "cors_ok": cors_ok,
                     "nonce_prep_ms": nonce_prep_ms,
                     "sign_ms": sign_ms,
                     "sentinel_forward_ms": sentinel_forward_ms,
@@ -6067,11 +6196,23 @@ def _handle_forward_lane(work: WorkItem, cfg: dict) -> dict:
 
         # Update listeners.json status/metrics.
         try:
-            _set_top_service_status(listener_id, provider_filter, "Up")
+            status_to_set = "Up" if int(code or 0) < 400 else "Down"
+            if cors_ok is False:
+                status_to_set = "Down"
+            _set_top_service_status(listener_id, provider_filter, status_to_set)
         except Exception:
             pass
         try:
-            _update_top_service_metrics(listener_id, provider_filter, (time.time() - t_start))
+            # Record response-time fields for successful requests.
+            # Always record last timing; update avg/count only when config succeeded.
+            # Poll warm-up skipping is handled per provider via rt_ignore_next (set by /reset-metrics).
+            if int(code or 0) < 400 and not auto_created:
+                _update_top_service_metrics(
+                    listener_id,
+                    provider_filter,
+                    (total_ms / 1000.0),
+                    include_in_avg=(cors_ok is not False),
+                )
         except Exception:
             pass
 
@@ -7650,12 +7791,12 @@ def create_listener():
 @app.put("/api/listeners/<listener_id>")
 def update_listener(listener_id: str):
     payload = request.get_json(silent=True) or {}
+    payload_top_services = payload.get("top_services") if isinstance(payload, dict) else None
+    custom_top = payload_top_services if isinstance(payload_top_services, list) else None
     data = _ensure_listeners_file()
     listeners = data.get("listeners") if isinstance(data, dict) else []
     if not isinstance(listeners, list):
         listeners = []
-    payload_top_services = payload.get("top_services") if isinstance(payload, dict) else None
-    custom_top = payload_top_services if isinstance(payload_top_services, list) else None
     existing_ports = _collect_used_ports(listeners, skip_id=listener_id)
     clean, err = _sanitize_listener_payload(payload, existing_ports, current_id=listener_id)
     if err:
@@ -7686,7 +7827,8 @@ def update_listener(listener_id: str):
         # top services ordering: use custom if provided, else keep existing unless service changed or empty
         existing_top = l.get("top_services") if isinstance(l.get("top_services"), list) else []
         if custom_top is not None:
-            new_top = custom_top  # honor explicit (even empty) input
+            # Honor explicit (even empty) input, but preserve persisted per-provider fields.
+            new_top = _merge_top_services_persisted_fields(existing_top, custom_top)
         else:
             new_top = existing_top
             if str(l.get("service_id")) != str(clean.get("service_id") or "") or not new_top:
@@ -7724,11 +7866,47 @@ def update_listener(listener_id: str):
             updated.clear()
             updated.update(old_snapshot)
         return jsonify({"error": err or "failed to start listener"}), 500
-    listeners.sort(key=lambda x: x.get("port") if isinstance(x, dict) else 0)
-    data["listeners"] = listeners
-    _write_listeners(data)
-    used_ports = existing_ports | ({updated["port"]} if isinstance(updated.get("port"), int) else set())
-    return jsonify({"listener": _enrich_listener_for_response(updated), "next_port": _next_available_port(used_ports)})
+    # Persist under lock so lane updates (contract/config/metrics) are not lost
+    # due to concurrent read-modify-write writers.
+    with _LISTENERS_RW_LOCK:
+        fresh = _ensure_listeners_file()
+        fresh_listeners = fresh.get("listeners") if isinstance(fresh, dict) else []
+        if not isinstance(fresh_listeners, list):
+            fresh_listeners = []
+        persisted = None
+        for l in fresh_listeners:
+            if not isinstance(l, dict):
+                continue
+            if str(l.get("id")) != str(listener_id):
+                continue
+            if clean["port"] is not None:
+                l["port"] = clean["port"]
+            l["target"] = ""
+            l["status"] = clean["status"]
+            l["service_id"] = clean.get("service_id") or ""
+            # Preserve persisted per-provider fields when custom top_services is provided.
+            existing_top = l.get("top_services") if isinstance(l.get("top_services"), list) else []
+            if custom_top is not None:
+                new_top = _merge_top_services_persisted_fields(existing_top, custom_top)
+            else:
+                new_top = existing_top
+                if str(l.get("service_id")) != str(clean.get("service_id") or "") or not new_top:
+                    new_top = best
+            l["top_services"] = _normalize_top_services(new_top)
+            l["whitelist_ips"] = clean.get("whitelist_ips") if clean.get("whitelist_ips") is not None else l.get("whitelist_ips", "")
+            l["health_method"] = clean.get("health_method") or l.get("health_method") or "POST"
+            l["health_payload"] = clean.get("health_payload") if clean.get("health_payload") is not None else l.get("health_payload", "")
+            l["health_header"] = clean.get("health_header") if clean.get("health_header") is not None else l.get("health_header", "")
+            l["updated_at"] = _timestamp()
+            persisted = l
+            break
+        if persisted is None:
+            return jsonify({"error": "listener not found"}), 404
+        fresh_listeners.sort(key=lambda x: x.get("port") if isinstance(x, dict) else 0)
+        fresh["listeners"] = fresh_listeners
+        _write_listeners(fresh)
+        used_ports = _collect_used_ports(fresh_listeners)
+        return jsonify({"listener": _enrich_listener_for_response(persisted), "next_port": _next_available_port(used_ports)})
 
 
 @app.delete("/api/listeners/<listener_id>")
@@ -7752,7 +7930,7 @@ def delete_listener(listener_id: str):
             _stop_listener_server(removed_entry.get("port"))
         # Clean up per-listener nonce stores for this listener.
         try:
-            cache_path = Path(CACHE_DIR)
+            cache_path = Path(NONCE_STORE_DIR)
             for f in cache_path.glob(f"nonce_store_{listener_id}_*.json"):
                 try:
                     f.unlink()
@@ -7766,6 +7944,59 @@ def delete_listener(listener_id: str):
     _write_listeners(data)
     used_ports = _collect_used_ports(new_list)
     return jsonify({"status": "ok", "next_port": _next_available_port(used_ports)})
+
+
+@app.post("/api/listeners/<listener_id>/reset-metrics")
+def reset_listener_metrics(listener_id: str):
+    """Clear response-time metrics for a listener's top services (used before polling)."""
+    updated: dict | None = None
+
+    def _mut(data: dict) -> bool:
+        nonlocal updated
+        listeners = data.get("listeners") if isinstance(data, dict) else []
+        if not isinstance(listeners, list):
+            return False
+        for l in listeners:
+            if not isinstance(l, dict):
+                continue
+            if str(l.get("id")) != str(listener_id):
+                continue
+            top = l.get("top_services") if isinstance(l.get("top_services"), list) else []
+            for ts in top:
+                if not isinstance(ts, dict):
+                    continue
+                ts.pop("rt_avg_ms", None)
+                ts.pop("rt_count", None)
+                ts.pop("rt_last_ms", None)
+                ts.pop("rt_updated_at", None)
+                # Per-provider warm-up: ignore the first sample after reset.
+                ts["rt_ignore_next"] = True
+            l["top_services"] = top
+            l["updated_at"] = _timestamp()
+            updated = l
+            return True
+        return False
+
+    try:
+        _update_listeners_atomic(_mut)
+    except Exception as e:
+        return jsonify({"error": "reset_failed", "detail": str(e)}), 500
+
+    if not updated:
+        return jsonify({"error": "listener not found"}), 404
+    # Also reset in-memory warmup so the next request doesn't skew metrics.
+    try:
+        port_val = updated.get("port")
+        port = int(port_val) if port_val is not None else None
+        if port is not None:
+            with _LISTENER_LOCK:
+                entry = _LISTENER_SERVERS.get(port)
+            srv = entry.get("server") if isinstance(entry, dict) else None
+            if srv is not None:
+                setattr(srv, "metrics_warm", False)
+    except Exception:
+        pass
+    return jsonify({"listener": _enrich_listener_for_response(updated)})
 
 
 @app.get("/api/active-service-types")
@@ -7782,29 +8013,34 @@ def get_active_service_types():
 @app.post("/api/listeners/<listener_id>/refresh-top-services")
 def refresh_listener_top_services(listener_id: str):
     """Recompute top_services for a single listener."""
-    data = _ensure_listeners_file()
-    listeners = data.get("listeners") if isinstance(data, dict) else []
-    if not isinstance(listeners, list):
-        listeners = []
-    found = None
-    for l in listeners:
-        if not isinstance(l, dict):
-            continue
-        if str(l.get("id")) != str(listener_id):
-            continue
-        found = l
-        break
-    if not found:
-        return jsonify({"error": "listener not found"}), 404
+    updated: dict | None = None
 
-    svc_id = found.get("service_id") or ""
-    best = _normalize_top_services(_top_active_services_by_payg(svc_id, limit=3))
-    found["top_services"] = best
-    found["updated_at"] = _timestamp()
-    listeners.sort(key=lambda x: x.get("port") if isinstance(x, dict) else 0)
-    data["listeners"] = listeners
-    _write_listeners(data)
-    return jsonify({"listener": _enrich_listener_for_response(found)})
+    def _mut(data: dict) -> bool:
+        nonlocal updated
+        listeners = data.get("listeners") if isinstance(data, dict) else []
+        if not isinstance(listeners, list):
+            return False
+        for l in listeners:
+            if not isinstance(l, dict):
+                continue
+            if str(l.get("id")) != str(listener_id):
+                continue
+            svc_id = l.get("service_id") or ""
+            best = _normalize_top_services(_top_active_services_by_payg(svc_id, limit=3))
+            l["top_services"] = best
+            l["updated_at"] = _timestamp()
+            updated = l
+            return True
+        return False
+
+    try:
+        _update_listeners_atomic(_mut)
+    except Exception as e:
+        return jsonify({"error": "refresh_failed", "detail": str(e)}), 500
+
+    if not updated:
+        return jsonify({"error": "listener not found"}), 404
+    return jsonify({"listener": _enrich_listener_for_response(updated)})
 
 
 @app.get("/api/services/<service_id>/providers")
@@ -7840,6 +8076,10 @@ def test_listener(listener_id: str):
         headers = {}
         if hh:
             headers["Content-Type"] = hh
+        # Polling uses the first run as a warm-up (contract fetch / config) and should not skew response-time stats.
+        warmup = request.args.get("warmup")
+        if warmup and str(warmup).strip().lower() not in ("0", "false", "no", "off", "null"):
+            headers["X-Arkeo-Ignore-Metrics"] = "1"
         payload_bytes = b""
         label = ""
         path = "/"
@@ -7951,6 +8191,9 @@ def test_listener(listener_id: str):
             payload["last_nonce"] = getattr(srv, "last_nonce", None)
             payload["last_nonce_source"] = getattr(srv, "last_nonce_source", None)
             payload["last_nonce_cache"] = getattr(srv, "last_nonce_cache", None)
+            last_timings = getattr(srv, "last_timings", None)
+            if isinstance(last_timings, dict):
+                payload["last_timings"] = last_timings
             last_up = getattr(srv, "last_upstream", None)
             if isinstance(last_up, dict):
                 payload["last_upstream_code"] = last_up.get("code")
@@ -7977,52 +8220,13 @@ def test_listener(listener_id: str):
                         payload["nonce_cache_key"] = _nonce_cache_key(str(cid), str(client_pub))
                 except Exception:
                     pass
-                # best-effort: push CORS config on each poll to keep sentinel config in sync
+                # Expose configured CORS origins for visibility (configuration is handled by the proxy lane).
                 try:
                     cfg_local = getattr(srv, "cfg", {}) or {}
                     cors_origins = cfg_local.get("cors_allowed_origins") or CORS_ALLOWED_ORIGINS
                     payload["cors_allowed_origins"] = cors_origins
-                    sentinel_for_cors = cand_sentinel or cfg_local.get("provider_sentinel_api") or sentinel_norm
-                    client_key = cfg_local.get("client_key") or KEY_NAME
-                    cid = active_contract.get("id")
-                    if cid and sentinel_for_cors and cors_origins:
-                        if not hasattr(srv, "cors_configured"):
-                            srv.cors_configured = {}
-                        last_entry = srv.cors_configured.get(provider_pk or cid) or {}
-                        last_orig = last_entry.get("cors_origins")
-                        last_cid = last_entry.get("contract_id")
-                        last_flag = last_entry.get("cors_configured", False)
-                        if last_cid != str(cid) or last_orig != cors_origins or not last_flag:
-                            ok, detail = _configure_contract_cors(
-                                cid,
-                                sentinel_for_cors,
-                                client_key,
-                                cors_origins,
-                                cfg_local.get("sign_template", PROXY_SIGN_TEMPLATE),
-                            )
-                            payload["cors_configured"] = ok
-                            if ok:
-                                srv.cors_configured[provider_pk or cid] = {
-                                    "contract_id": str(cid),
-                                    "cors_origins": cors_origins,
-                                    "cors_configured": True,
-                                }
-                                _update_top_service_contract(
-                                    cfg_local.get("listener_id"),
-                                    provider_pk or cfg_local.get("provider_pubkey") or active_contract.get("provider"),
-                                    cid,
-                                    cors_origins,
-                                    True,
-                                )
-                            elif detail:
-                                payload["cors_error"] = detail
-                        else:
-                            self._log("info", f"cors skip (unchanged) contract={cid} origins={cors_origins}")
-                except Exception as e:
-                    try:
-                        payload["cors_error"] = str(e)
-                    except Exception:
-                        pass
+                except Exception:
+                    pass
         if isinstance(resp_headers, dict):
             payload["arkeo_nonce"] = resp_headers.get("X-Arkeo-Nonce") or resp_headers.get("x-arkeo-nonce")
             payload["arkeo_contract_id"] = resp_headers.get("X-Arkeo-Contract-Id") or resp_headers.get("x-arkeo-contract-id")

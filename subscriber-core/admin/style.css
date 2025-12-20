@@ -93,6 +93,27 @@ a { color: var(--blue-accent); }
     color: var(--muted-2);
     font-weight: 600;
 }
+.top-services-help-icon {
+    appearance: none;
+    background: transparent;
+    border: none;
+    padding: 0;
+    margin-left: 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted-2);
+    opacity: 0.85;
+    cursor: pointer;
+}
+.top-services-help-icon:hover {
+    opacity: 1;
+    color: var(--text);
+}
+.top-services-help-icon svg {
+    width: 14px;
+    height: 14px;
+}
 .ts-col-num {
     width: 32px;
     color: var(--muted-2);
@@ -1575,7 +1596,7 @@ pre {
 }
 .modal-body {
     text-align: left;
-    white-space: pre-wrap;
+    white-space: pre-line;
     background: var(--card);
     border: 1px solid var(--border);
     border-radius: 8px;

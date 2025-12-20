@@ -2,7 +2,7 @@
 <html>
 <head>
     <meta charset="utf-8">
-    <title>Arkeo Data Marketplace | Subscriber Manager</title>
+    <title>Arkeo Data Engine | Subscriber</title>
     <link rel="stylesheet" href="style.css">
     <link rel="icon" href="images/favicon.ico">
     <link rel="shortcut icon" href="images/favicon.ico">
@@ -2178,6 +2178,50 @@
         if (modal) modal.classList.remove("hidden");
     }
 
+    function showTopServicesHelp(topic, event) {
+        if (event && typeof event.stopPropagation === "function") event.stopPropagation();
+        const t = String(topic || "").toLowerCase();
+        if (t === "contract") {
+            const body = `
+                <div class="muted small" style="line-height:1.5;">
+                    <div style="font-weight:700; margin:0 0 0 0;">Success</div>
+                    <ul style="margin:0 0 0 0;">
+                        <li>There is an active PAYG contract cached for that provider service.</li>
+                    </ul>
+                    <div style="font-weight:700; margin:0 0 0 0;">Common reasons for failure</div>
+                    <ul style="margin:0 0 0 0;">
+                        <li>No active contract found yet (first use / cache cleared).</li>
+                        <li>Auto-create failed (rate/settlement mismatch, insufficient funds, chain error).</li>
+                        <li>Contract exists but is no longer usable (expired/settled/invalid) and needs recreation.</li>
+                        <li>The provider sentinel or node is down. Check the listener log for more details.</li>
+                    </ul>
+                </div>
+            `;
+            showResultModal("Top Services: Contract", body, true);
+            return;
+        }
+        if (t === "config") {
+            const body = `
+                <div class="muted small" style="line-height:1.5;">
+                    <div style="font-weight:700; margin:0 0 0 0;">Success</div>
+                    <ul style="margin:0 0 0 0;">
+                        <li>The subscriber successfully pushed the contract CORS config (Settings → CORS Origins) to the provider sentinel.</li>
+                    </ul>
+                    <div style="font-weight:700; margin:0 0 0 0;">Common reasons for failure</div>
+                    <ul style="margin:0 0 0 0;">
+                        <li>Provider sentinel manage endpoint is unreachable / times out.</li>
+                        <li>Provider metadata <span class="mono">hub_provider_uri</span> is unreachable (often points at <span class="mono">127.0.0.1:1317</span> from their host).</li>
+                        <li>Contract not found on the provider, or auth/signature rejected.</li>
+                        <li>If Config is red, browser clients may hit CORS errors even if the contract works.</li>
+                    </ul>
+                </div>
+            `;
+            showResultModal("Top Services: Config", body, true);
+            return;
+        }
+        showResultModal("Top Services", "Help unavailable.");
+    }
+
     function scrollResultModalBottom() {
         const doScroll = () => {
             const modalBody = document.getElementById("modalBody");
@@ -2578,28 +2622,54 @@
                                </div>`
                             : "";
                         const statusVal = bp && bp.status ? String(bp.status) : "";
-                        const statusDot = statusVal.toLowerCase() === "up"
+                        const hasContract = Boolean(bp && bp.last_contract_id);
+                        const hasConfig = Boolean(bp && bp.cors_configured === true);
+                        const overallUp = statusVal.toLowerCase() === "up" && hasContract && hasConfig;
+                        const statusDot = overallUp
                             ? '<span class="status-dot dot-ok"></span>'
-                            : statusVal.toLowerCase() === "down"
-                                ? '<span class="status-dot dot-err"></span>'
-                                : "—";
+                            : '<span class="status-dot dot-err"></span>';
                         let rtDisplay = "—";
+                        const contractDot = bp && bp.last_contract_id ? '<span class="status-dot dot-ok"></span>' : '<span class="status-dot dot-err"></span>';
+                        const configDot = bp && bp.cors_configured === true
+                            ? '<span class="status-dot dot-ok"></span>'
+                            : '<span class="status-dot dot-err"></span>';
                         if (bp && bp.rt_avg_ms !== undefined && bp.rt_avg_ms !== null) {
                             const avgMs = Number(bp.rt_avg_ms);
                             if (!Number.isNaN(avgMs)) {
                                 rtDisplay = `${Math.round(avgMs)} ms`;
+                            }
+                        } else if (bp && bp.rt_last_ms !== undefined && bp.rt_last_ms !== null) {
+                            const lastMs = Number(bp.rt_last_ms);
+                            if (!Number.isNaN(lastMs)) {
+                                rtDisplay = `${Math.round(lastMs)} ms`;
                             }
                         }
                         return `<tr>
                             <td class="ts-col-num"><span class="muted small" style="color:#fff; font-weight:700;">${idx + 1}</span></td>
                             <td class="ts-col-name"><span class="muted small" style="color:#fff; font-weight:700;">${escapeHtml(name)}${inactive ? " (Inactive)" : ""}</span></td>
                             <td class="ts-col-rate"><span class="muted small" style="color:#fff; font-weight:700;">${escapeHtml(rate)}</span></td>
+                            <td class="ts-col-status">${contractDot}</td>
+                            <td class="ts-col-status">${configDot}</td>
                             <td class="ts-col-status">${statusDot}</td>
                             <td class="ts-col-rt"><span class="muted small" style="color:#fff; font-weight:700;">${escapeHtml(rtDisplay)}</span></td>
                             ${isEditing ? `<td class="ts-col-actions">${actions}</td>` : ""}
                         </tr>`;
-                    }).join("") : `<tr><td colspan="6" class="muted small">No providers yet.</td></tr>`;
-                const head = `<tr><th>#</th><th>Provider</th><th>Price</th><th>Status</th><th>Response Time</th><th></th></tr>`;
+                    }).join("") : `<tr><td colspan="8" class="muted small">No providers yet.</td></tr>`;
+                const contractHelpIcon = `<button type="button" class="top-services-help-icon" onclick="showTopServicesHelp('contract', event)" aria-label="Contract help" title="Contract help">
+                        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                            <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"></circle>
+                            <path d="M12 7.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z" fill="currentColor"></path>
+                            <path d="M11.25 10.5h1.5v6h-1.5z" fill="currentColor"></path>
+                        </svg>
+                    </button>`;
+                const configHelpIcon = `<button type="button" class="top-services-help-icon" onclick="showTopServicesHelp('config', event)" aria-label="Config help" title="Config help">
+                        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                            <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"></circle>
+                            <path d="M12 7.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z" fill="currentColor"></path>
+                            <path d="M11.25 10.5h1.5v6h-1.5z" fill="currentColor"></path>
+                        </svg>
+                    </button>`;
+                const head = `<tr><th>#</th><th>Provider</th><th>Price</th><th>Contract ${contractHelpIcon}</th><th>Config ${configHelpIcon}</th><th>Status</th><th>Response Time</th><th></th></tr>`;
                 const svcForTop = l.service_id || l.service;
                 const selectId = `addTopSvc-${l.id}`;
                 const cached = svcForTop ? providersByServiceCache[String(svcForTop)] : undefined;
@@ -2645,27 +2715,53 @@
                                 : "";
                             const actions = "";
                             const statusVal = bp && bp.status ? String(bp.status) : "";
-                            const statusDot = statusVal.toLowerCase() === "up"
+                            const hasContract = Boolean(bp && bp.last_contract_id);
+                            const hasConfig = Boolean(bp && bp.cors_configured === true);
+                            const overallUp = statusVal.toLowerCase() === "up" && hasContract && hasConfig;
+                            const statusDot = overallUp
                                 ? '<span class="status-dot dot-ok"></span>'
-                                : statusVal.toLowerCase() === "down"
-                                    ? '<span class="status-dot dot-err"></span>'
-                                    : "—";
+                                : '<span class="status-dot dot-err"></span>';
+                        const contractDot = bp && bp.last_contract_id ? '<span class="status-dot dot-ok"></span>' : '<span class="status-dot dot-err"></span>';
+                        const configDot = bp && bp.cors_configured === true
+                            ? '<span class="status-dot dot-ok"></span>'
+                            : '<span class="status-dot dot-err"></span>';
                             let rtDisplay = "—";
                             if (bp && bp.rt_avg_ms !== undefined && bp.rt_avg_ms !== null) {
                                 const avgMs = Number(bp.rt_avg_ms);
                                 if (!Number.isNaN(avgMs)) {
                                     rtDisplay = `${Math.round(avgMs)} ms`;
                                 }
+                            } else if (bp && bp.rt_last_ms !== undefined && bp.rt_last_ms !== null) {
+                                const lastMs = Number(bp.rt_last_ms);
+                                if (!Number.isNaN(lastMs)) {
+                                    rtDisplay = `${Math.round(lastMs)} ms`;
+                                }
                             }
                             return `<tr>
                                 <td class="ts-col-num"><span class="muted small" style="color:#fff; font-weight:700;">${idx + 1}</span></td>
                                 <td class="ts-col-name"><span class="muted small" style="color:#fff; font-weight:700;">${escapeHtml(name)}${inactive ? " (Inactive)" : ""}</span></td>
                                 <td class="ts-col-rate"><span class="muted small" style="color:#fff; font-weight:700;">${escapeHtml(rate)}</span></td>
+                                <td class="ts-col-status">${contractDot}</td>
+                                <td class="ts-col-status">${configDot}</td>
                                 <td class="ts-col-status">${statusDot}</td>
                                 <td class="ts-col-rt"><span class="muted small" style="color:#fff; font-weight:700;">${escapeHtml(rtDisplay)}</span></td>
                             </tr>`;
                         }).join("");
-                        const head = `<tr><th>#</th><th>Provider</th><th>Price</th><th>Status</th><th>Response Time</th></tr>`;
+                        const contractHelpIcon = `<button type="button" class="top-services-help-icon" onclick="showTopServicesHelp('contract', event)" aria-label="Contract help" title="Contract help">
+                                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                                    <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"></circle>
+                                    <path d="M12 7.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z" fill="currentColor"></path>
+                                    <path d="M11.25 10.5h1.5v6h-1.5z" fill="currentColor"></path>
+                                </svg>
+                            </button>`;
+                        const configHelpIcon = `<button type="button" class="top-services-help-icon" onclick="showTopServicesHelp('config', event)" aria-label="Config help" title="Config help">
+                                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                                    <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"></circle>
+                                    <path d="M12 7.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z" fill="currentColor"></path>
+                                    <path d="M11.25 10.5h1.5v6h-1.5z" fill="currentColor"></path>
+                                </svg>
+                            </button>`;
+                        const head = `<tr><th>#</th><th>Provider</th><th>Price</th><th>Contract ${contractHelpIcon}</th><th>Config ${configHelpIcon}</th><th>Status</th><th>Response Time</th></tr>`;
                         return `<table class="top-services-table">
                             <thead>${head}</thead>
                             <tbody>${rows}</tbody>
@@ -3385,8 +3481,8 @@
 
     async function pollListener(id) {
         openListenerId = String(id);
-        const listener = listenersCache.find((l) => String(l.id) === String(id));
-        const top = listener && Array.isArray(listener.top_services) ? dedupTopServices(listener.top_services) : [];
+        let listener = listenersCache.find((l) => String(l.id) === String(id));
+        let top = listener && Array.isArray(listener.top_services) ? dedupTopServices(listener.top_services) : [];
         const successMap = {};
         // modal shell
         const port = listener?.port ? listener.port : "–";
@@ -3412,6 +3508,34 @@
         };
         showResultModal("Poll Listener", "", true);
         renderPollShell();
+        // Reset response-time metrics before polling to measure fresh.
+        try {
+            await fetch(apiUrl(`/api/listeners/${encodeURIComponent(id)}/reset-metrics`), { method: "POST", cache: "no-store" });
+        } catch (e) {
+            /* best-effort; continue */
+        }
+        // Refresh listeners after reset so we don't re-send stale rt_* fields back via the reorder PUT.
+        try {
+            await loadListeners();
+            listener = listenersCache.find((l) => String(l.id) === String(id));
+            top = listener && Array.isArray(listener.top_services) ? dedupTopServices(listener.top_services) : [];
+        } catch (e) {
+            /* best-effort; continue */
+        }
+        const mergeMeta = (list, cacheTop) => {
+            const map = {};
+            (cacheTop || []).forEach((t) => {
+                const key = `${t?.provider_pubkey || ""}::${t?.service_id || t?.service || ""}`;
+                map[key] = t;
+            });
+            return list.map((t) => {
+                const key = `${t?.provider_pubkey || ""}::${t?.service_id || t?.service || ""}`;
+                if (map[key]) {
+                    return { ...map[key], ...t };
+                }
+                return t;
+            });
+        };
         if (!top.length) {
             appendPollLog("No providers to poll; running a single test instead.");
             await testListener(id);
@@ -3439,10 +3563,11 @@
                     return keyT !== keyTs;
                 })]);
                 try {
+                    const merged = mergeMeta(reordered, top);
                     await fetch(apiUrl(`/api/listeners/${encodeURIComponent(id)}`), {
                         method: "PUT",
                         headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ ...basePayload, top_services: reordered }),
+                        body: JSON.stringify({ ...basePayload, top_services: merged }),
                     });
                     appendPollLog("  Performing tests and polling data...");
                 } catch (e) {
@@ -3456,14 +3581,41 @@
                 let allOk = true;
                 for (let i = 0; i < runs; i++) {
                     try {
-                        const res = await fetch(apiUrl(`/api/listeners/${encodeURIComponent(id)}/test`), { method: "GET", cache: "no-store" });
+                        // Treat the first run as a warm-up: it may pay a one-time contract fetch/config cost.
+                        // We still display the result, but the backend will ignore it for response-time stats.
+                        const testUrl = apiUrl(`/api/listeners/${encodeURIComponent(id)}/test`) + (i === 0 ? "?warmup=1" : "");
+                        const res = await fetch(testUrl, { method: "GET", cache: "no-store" });
                         const data = await res.json().catch(() => ({}));
                         const ok = isTestOk(res, data);
                         if (!ok) allOk = false;
+
+                        const timings = data?.last_timings || {};
+                        // Display end-to-end timing on the Contract line (this is what users care about in polling).
+                        const totalMs = Number(timings?.total_ms);
+                        const contractMsText = Number.isFinite(totalMs) ? `${Math.round(totalMs)} ms` : "—";
+                        const contractOk = Boolean(data?.arkeo_contract_id || data?.active_contract_id);
+                        if (!contractOk) allOk = false;
+
+                        const corsOkVal = timings?.cors_ok;
+                        const configOk = corsOkVal === true;
+                        const configFailed = corsOkVal === false;
+                        if (configFailed) allOk = false;
+                        const configMs = Number(timings?.cors_ms);
+                        const configMsText = Number.isFinite(configMs) ? `${Math.round(configMs)} ms` : "—";
+
+                        appendPollLog(`  Test ${i + 1}/${runs}:`);
+                        appendPollLog(`    - Contract: ${contractOk ? "OK" : "Failed"} (${contractMsText})`);
+                        appendPollLog(`    - Config: ${configOk ? "OK" : (configFailed ? "Failed" : "—")} (${configMsText})`);
+
                         const err = !ok ? (data && (data.detail || data.error)) || res.statusText || res.status : "";
-                        appendPollLog(`  Test ${i + 1}/${runs}: ${ok ? "OK" : `Error ${err}`}`);
+                        if (!ok && err) {
+                            appendPollLog(`    - Error: ${err}`);
+                        }
                     } catch (e) {
-                        appendPollLog(`  Test ${i + 1}/${runs}: Error ${e}`);
+                        appendPollLog(`  Test ${i + 1}/${runs}:`);
+                        appendPollLog(`    - Contract: Failed (—)`);
+                        appendPollLog(`    - Config: Failed (—)`);
+                        appendPollLog(`    - Error: ${e}`);
                         allOk = false;
                     }
                     await new Promise(res => setTimeout(res, spacingMs));
@@ -3493,6 +3645,10 @@
         }
         const sorted = [...latestTop].sort((a, b) => {
             const statusScore = (x) => {
+                // penalize missing contract or cors config
+                const hasContract = Boolean(x?.last_contract_id);
+                const hasConfig = Boolean(x?.cors_configured);
+                if (!hasContract || !hasConfig) return 3;
                 const s = String(x?.status || "").toLowerCase();
                 if (s === "up") return 0;
                 if (s === "down") return 2;
@@ -3521,12 +3677,13 @@
             return rtA - rtB; // faster first
         });
         try {
+            const merged = mergeMeta(sorted, latestTop);
             await fetch(apiUrl(`/api/listeners/${encodeURIComponent(id)}`), {
                 method: "PUT",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ ...basePayload, top_services: sorted }),
+                body: JSON.stringify({ ...basePayload, top_services: merged }),
             });
-            appendPollLog("Sorted providers by price then latency and saved.\n\nPolling and sorting complete.");
+            appendPollLog("Sorted providers by status, price, then latency and saved.\n\nPolling and sorting complete.");
         } catch (e) {
             /* ignore */
             appendPollLog(`Failed to save sorted providers: ${e}`);
