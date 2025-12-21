@@ -2274,7 +2274,7 @@ PROXY_CREATE_QPM = os.getenv("PROXY_CREATE_QPM", "10000")
 PROXY_CREATE_SETTLEMENT = os.getenv("PROXY_CREATE_SETTLEMENT", "1000")
 PROXY_CREATE_AUTHZ = os.getenv("PROXY_CREATE_AUTHZ", "0")
 PROXY_CREATE_DELEGATE = os.getenv("PROXY_CREATE_DELEGATE", "")
-PROXY_CREATE_FEES = os.getenv("PROXY_CREATE_FEES", FEES_DEFAULT)
+PROXY_CREATE_FEES = os.getenv("PROXY_CREATE_FEES", "300uarkeo")
 PROXY_CREATE_TIMEOUT = int(os.getenv("PROXY_CREATE_TIMEOUT", "30"))
 PROXY_CREATE_BACKOFF = int(os.getenv("PROXY_CREATE_BACKOFF", "2"))
 PROXY_MAX_DEPOSIT = os.getenv("PROXY_MAX_DEPOSIT", "50000000")
@@ -6156,11 +6156,28 @@ def _handle_forward_lane(work: WorkItem, cfg: dict) -> dict:
                 )
             except Exception:
                 pass
-            txhash, out, _dep = _create_contract_now(cfg_create, client_pub)
+            txhash, out, _dep, ok = _create_contract_now(cfg_create, client_pub, log_cb=_log)
             if out:
                 _log("info", f"open-contract response: {out.strip()}")
             if txhash:
                 _log("info", f"open-contract txhash={txhash}")
+            if not ok:
+                _log("info", "open-contract failed; skipping contract wait")
+                last_err = "open_contract_failed"
+                try:
+                    _set_top_service_status(listener_id, provider_filter, "Down")
+                except Exception:
+                    pass
+                try:
+                    _update_top_service_metrics(listener_id, provider_filter, (time.time() - cand_start), include_in_avg=False)
+                except Exception:
+                    pass
+                try:
+                    if server_ref is not None and PROXY_OPEN_COOLDOWN:
+                        server_ref.cooldowns[provider_filter] = time.time() + PROXY_OPEN_COOLDOWN
+                except Exception:
+                    pass
+                continue
             wait_sec = _safe_int(cfg_create.get("create_timeout_sec", PROXY_CREATE_TIMEOUT), PROXY_CREATE_TIMEOUT)
             active = _wait_for_new_contract(cfg_create, client_pub, svc_id, start_height, wait_sec)
             if active:
@@ -6739,7 +6756,59 @@ def _forward_to_sentinel(
 _TXHASH_RE = re.compile(r'(?i)\btxhash\b[:\s"]+([0-9A-Fa-f]{64})')
 
 
-def _create_contract_now(cfg: dict, client_pub: str) -> tuple[str | None, str, int]:
+def _parse_tx_json(raw: str) -> dict | None:
+    """Extract the tx JSON object from CLI output that may include warnings."""
+    if not raw:
+        return None
+    for line in reversed(raw.splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                return json.loads(line)
+            except Exception:
+                continue
+    try:
+        start = raw.find("{")
+        if start != -1:
+            return json.loads(raw[start:])
+    except Exception:
+        return None
+    return None
+
+
+def _create_contract_now(cfg: dict, client_pub: str, log_cb=None) -> tuple[str | None, str, int, bool]:
+    def _query_account_seq(node_rpc: str) -> tuple[str | None, str | None]:
+        client_key = cfg.get("client_key") or KEY_NAME
+        keyring_backend = cfg.get("keyring_backend") or KEYRING
+        addr, addr_err = derive_address(client_key, keyring_backend)
+        if addr_err or not addr:
+            return None, None
+        acct_cmd = ["arkeod", "--home", ARKEOD_HOME, "query", "auth", "account", addr, "-o", "json"]
+        if node_rpc:
+            acct_cmd.extend(["--node", node_rpc])
+        code, acct_out = run_list(acct_cmd)
+        if code != 0:
+            return None, None
+        try:
+            acct = json.loads(acct_out)
+        except Exception:
+            return None, None
+        if not isinstance(acct, dict):
+            return None, None
+        account_info = acct.get("account") or acct.get("result") or {}
+        if isinstance(account_info, dict) and account_info.get("base_account"):
+            account_info = account_info.get("base_account") or {}
+        if isinstance(account_info, dict):
+            val = account_info.get("value") or account_info
+        else:
+            val = account_info
+        if not isinstance(val, dict):
+            return None, None
+        seq_val = val.get("sequence")
+        acc_num = val.get("account_number")
+        return str(seq_val) if seq_val is not None else None, str(acc_num) if acc_num is not None else None
     max_dep = _safe_int(cfg.get("max_deposit", PROXY_MAX_DEPOSIT), _safe_int(PROXY_MAX_DEPOSIT, 0))
     dep_raw = _safe_int(cfg.get("create_deposit", "0"), 0)
     if dep_raw <= 0:
@@ -6750,44 +6819,117 @@ def _create_contract_now(cfg: dict, client_pub: str) -> tuple[str | None, str, i
     dep = dep_raw
     if max_dep and dep > max_dep:
         dep = max_dep
-    cmd = (
-        'arkeod tx arkeo open-contract '
-        f'--home "{ARKEOD_HOME}" '
-        f'"{cfg.get("create_provider_pubkey","")}" '
-        f'"{cfg.get("service_name","")}" '
-        f'"{client_pub}" '
-        f'"{_safe_int(cfg.get("create_type","1"))}" '
-        f'"{dep}" '
-        f'"{_safe_int(cfg.get("create_duration", PROXY_CREATE_DURATION))}" '
-        f'"{cfg.get("create_rate", PROXY_CREATE_RATE)}" '
-        f'"{_safe_int(cfg.get("create_qpm", PROXY_CREATE_QPM))}" '
-        f'"{_safe_int(cfg.get("create_settlement", PROXY_CREATE_SETTLEMENT))}" '
-        f'"{_safe_int(cfg.get("create_authz","0"))}" '
-        f'"{cfg.get("create_delegate","")}" '
-        f'--from="{cfg.get("client_key","")}" '
-        f'--fees="{cfg.get("create_fees", PROXY_CREATE_FEES)}" '
-        f'--keyring-backend="{cfg.get("keyring_backend","test")}" '
-        f'--node "{cfg.get("node_rpc")}" '
-        f'--chain-id "{cfg.get("chain_id")}" '
-        "--gas auto --gas-adjustment 1.2 "
-        "--yes --output json"
-    )
-    code, out = run(cmd)
-    if code != 0:
-        return None, out, dep
+    node_rpc = cfg.get("node_rpc") or ARKEOD_NODE
+    cmd_base = [
+        "arkeod",
+        "tx",
+        "arkeo",
+        "open-contract",
+        "--home",
+        ARKEOD_HOME,
+        str(cfg.get("create_provider_pubkey", "")),
+        str(cfg.get("service_name", "")),
+        str(client_pub),
+        str(_safe_int(cfg.get("create_type", "1"))),
+        str(dep),
+        str(_safe_int(cfg.get("create_duration", PROXY_CREATE_DURATION))),
+        str(cfg.get("create_rate", PROXY_CREATE_RATE)),
+        str(_safe_int(cfg.get("create_qpm", PROXY_CREATE_QPM))),
+        str(_safe_int(cfg.get("create_settlement", PROXY_CREATE_SETTLEMENT))),
+        str(_safe_int(cfg.get("create_authz", "0"))),
+        str(cfg.get("create_delegate", "")),
+        "--from",
+        str(cfg.get("client_key", "")),
+        "--fees",
+        str(cfg.get("create_fees", PROXY_CREATE_FEES)),
+        "--keyring-backend",
+        str(cfg.get("keyring_backend", "test")),
+        "--node",
+        str(node_rpc),
+        "--chain-id",
+        str(cfg.get("chain_id")),
+        "--yes",
+        "--output",
+        "json",
+    ]
+    cmd = [*cmd_base, "--gas", "auto", "--gas-adjustment", "1.2"]
+    if callable(log_cb):
+        try:
+            log_cb("info", f"open-contract cmd={shlex.join(cmd)}")
+        except Exception:
+            pass
     try:
-        j = json.loads(out)
+        with tx_lock(timeout_s=45.0):
+            code, out = run_list(cmd)
+    except TimeoutError:
+        return None, "tx lock busy", dep, False
+    if code != 0 and "account sequence mismatch" in str(out).lower():
+        seq_val = None
+        got_val = None
+        m_exp = re.search(r"expected\s+(\d+)", str(out))
+        m_got = re.search(r"got\s+(\d+)", str(out))
+        if m_exp:
+            seq_val = m_exp.group(1)
+        if m_got:
+            got_val = m_got.group(1)
+        if seq_val is None and got_val is not None:
+            try:
+                seq_val = str(int(got_val) + 1)
+            except Exception:
+                seq_val = got_val
+        acct_seq, _acct_num = _query_account_seq(node_rpc)
+        if seq_val is None and acct_seq is not None:
+            seq_val = acct_seq
+        wait_max = _safe_int(cfg.get("create_timeout_sec", PROXY_CREATE_TIMEOUT), PROXY_CREATE_TIMEOUT)
+        wait_max = min(wait_max, 10)
+        if callable(log_cb):
+            try:
+                log_cb("info", f"open-contract retry wait target_seq={seq_val} timeout={wait_max}s")
+            except Exception:
+                pass
+        if seq_val is not None:
+            try:
+                target_seq = int(seq_val)
+            except Exception:
+                target_seq = None
+            deadline = time.time() + wait_max
+            while target_seq is not None and time.time() < deadline:
+                cur_seq, _cur_acc = _query_account_seq(node_rpc)
+                try:
+                    if cur_seq is not None and int(cur_seq) >= target_seq:
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.5)
+        else:
+            time.sleep(min(0.5, wait_max))
+        retry_cmd = list(cmd)
+        if callable(log_cb):
+            try:
+                log_cb("info", f"open-contract retry cmd={shlex.join(retry_cmd)}")
+            except Exception:
+                pass
+        try:
+            with tx_lock(timeout_s=45.0):
+                code, out = run_list(retry_cmd)
+        except TimeoutError:
+            return None, "tx lock busy", dep, False
+    if code != 0:
+        return None, out, dep, False
+    j = _parse_tx_json(out)
+    if isinstance(j, dict):
+        code_val = j.get("code")
+        if code_val not in (None, "", 0, "0"):
+            return None, out, dep, False
         txh = j.get("txhash") or j.get("TxHash") or ""
         if isinstance(txh, list):
             txh = txh[0] if txh else ""
         if txh:
-            return txh, out, dep
-    except json.JSONDecodeError:
-        pass
+            return txh, out, dep, True
     m = _TXHASH_RE.search(out)
     if m:
-        return m.group(1), out, dep
-    return None, out, dep
+        return m.group(1), out, dep, True
+    return None, out, dep, True
 
 
 def _wait_for_new_contract(cfg: dict, client_pub: str, svc_id: int, start_height: int, wait_sec: int) -> dict | None:
