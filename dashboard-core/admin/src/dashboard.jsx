@@ -1557,7 +1557,9 @@ docker run -d --name subscriber-core --restart=unless-stopped \\
             <div className="max-w-7xl mx-auto px-4 py-4 relative z-10">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-4">
-                  <ArkeoLogo size={44} />
+                  <a href="https://arkeo.network" aria-label="Arkeo Home">
+                    <ArkeoLogo size={44} />
+                  </a>
                   <div>
                     <h1 className="text-xl font-bold text-white">The Arkeo Data Marketplace</h1>
                     <p className="text-xs text-secondaryText">Powering a global economy of data.</p>
