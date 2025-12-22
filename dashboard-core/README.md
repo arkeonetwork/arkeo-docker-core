@@ -7,11 +7,11 @@ Cache-only admin UI + API that reuses the subscriber-core sync pipeline (arkeod 
 # build
 docker build -t arkeonetwork/dashboard-core:dev .
 
-# run (UI defaults to 8077 in the container, API to 9996)
+# run (UI defaults to 8077 in the container, API to 9996; nginx proxies HTTP/HTTPS to the UI and API)
 mkdir -p ~/dashboard-core/config ~/dashboard-core/cache ~/dashboard-core/arkeo
 docker run --rm --name dashboard-core-dev \
     --env-file dashboard.env \
-    -p 8079:8077 -p 9996:9996 \
+    -p 80:80 -p 443:443 -p 8079:8077 -p 9996:9996 \
     -v ~/dashboard-core/config:/app/config \
     -v ~/dashboard-core/cache:/app/cache \
     -v ~/dashboard-core/arkeo:/root/.arkeo \
@@ -53,5 +53,18 @@ Env knobs:
 - `BLOCK_HEIGHT_INTERVAL` (default `60`) seconds for updating `dashboard_info.json` with latest block height.
 - `BLOCK_TIME_SECONDS` (default `5.79954919`) average block time baked into `dashboard_info.json`.
 - `CONFIG_DIR` (default `/app/config`) where `subscriber-settings.json` is read from (fallback also checks `/app/cache`).
+- `HTTP_PORT` (default `80`) port nginx listens on for HTTP.
+- `HTTPS_PORT` (default `443`) port nginx listens on for HTTPS.
+- `ENABLE_TLS` (default `1`) set to `0` to disable HTTPS listener.
+- `TLS_CERT_PATH` (default `/app/config/tls.crt`) TLS certificate path for nginx.
+- `TLS_KEY_PATH` (default `/app/config/tls.key`) TLS key path for nginx.
+- `TLS_CERT_CN` (default `localhost`) CN used for self-signed certs when TLS keys are missing.
+- `TLS_SELF_SIGNED` (default `1`) set to `0` to avoid generating a self-signed cert.
 
 UI is currently header/footer only; API endpoints mirror the subscriber sync surface (`/api/cache-refresh`, `/api/cache-status`, `/api/cache-counts`, `/api/providers-with-contracts`, `/api/block-height`, etc.).
+
+Frontend build (for local runs outside Docker):
+```
+npm install
+npm run build
+```

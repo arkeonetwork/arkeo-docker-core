@@ -5,48 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>The Arkeo Data Marketplace</title>
   <link rel="icon" type="image/x-icon" href="images/favicon.ico">
-  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {
-      theme: {
-        extend: {
-          colors: {
-            arkeo: {
-              DEFAULT: '#3be0ff',
-              50: '#edfcff',
-              100: '#d6f7ff',
-              200: '#b5f2ff',
-              300: '#83ebff',
-              400: '#3be0ff',
-              500: '#14c8eb',
-              600: '#00a0c5',
-              700: '#0080a0',
-              800: '#066883',
-              900: '#0b566d',
-            },
-            primary: '#FF2BCB',
-            primaryMid: '#FF4FD2',
-            primaryEnd: '#FF8A2B',
-            secondary: '#3E4656',
-            secondaryText: '#A9AFC0',
-            surface: '#161A23',
-            border: '#1E222C',
-            background: '#0F121A',
-          }
-        }
-      }
-    }
-  </script>
-  <link rel="stylesheet" href="dashboard.css">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <link rel="stylesheet" href="build/dashboard.css">
 </head>
 <body>
   <div id="root"></div>
   
-    <script type="text/babel" src="dashboard.js"></script>
+    <script type="module" src="build/dashboard.js"></script>
 
 </body>
 </html>

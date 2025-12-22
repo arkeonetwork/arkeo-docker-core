@@ -16,7 +16,20 @@ RUN make install
 # Build: extra tools (signing utilities, helpers, etc.)
 RUN make tools
 
-# ---------- Stage 2: runtime container ----------
+# ---------- Stage 2: build dashboard assets ----------
+FROM node:20-alpine AS frontend
+
+WORKDIR /frontend
+
+COPY package.json /frontend/package.json
+COPY tailwind.config.cjs /frontend/tailwind.config.cjs
+COPY admin/index.html /frontend/admin/index.html
+COPY admin/src/ /frontend/admin/src/
+
+RUN npm install
+RUN npm run build
+
+# ---------- Stage 3: runtime container ----------
 FROM debian:12-slim
 
 RUN apt-get update && apt-get install -y \
@@ -26,6 +39,8 @@ RUN apt-get update && apt-get install -y \
     python3 \
     python3-venv \
     python3-flask \
+    nginx \
+    openssl \
     jq \
     python3-yaml \
     && rm -rf /var/lib/apt/lists/*
@@ -38,6 +53,7 @@ COPY --from=builder /go/bin/* /usr/local/bin/
 # Copy configs and admin assets
 COPY config/ /app/config/
 COPY admin/ /app/admin/
+COPY --from=frontend /frontend/admin/build/ /app/admin/build/
 COPY admin_api.py /app/admin_api.py
 COPY cache_fetcher.py /app/cache_fetcher.py
 COPY dashboard_info.py /app/dashboard_info.py
@@ -47,7 +63,7 @@ COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
-# Expose the admin UI (8077) and admin API (9996).
-EXPOSE 8077 9996
+# Expose HTTP/HTTPS for the dashboard, plus the API port.
+EXPOSE 80 443 9996
 
 ENTRYPOINT ["/app/entrypoint.sh"]
