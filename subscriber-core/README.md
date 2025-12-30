@@ -3,7 +3,7 @@
 This Docker image provides an Admin UI and API to operate a subscriber hot wallet, build a local cache of the Arkeo Data Marketplace, and expose listener proxies that automatically create and fulfill pay-as-you-go contracts with top providers. This lets your apps consume node data securely and cost-effectively.
 
 <details>
-<summary><strong>Preview the Arkeo Data Engine - Subscriber admin UI</strong></summary>
+<summary><strong>🖼️ Preview the Arkeo Data Engine - Subscriber admin UI</strong></summary>
 <a href="../images/arkeo-data-engine-subscriber-2.jpg">
   <img src="../images/arkeo-data-engine-subscriber-2.jpg" alt="Subscriber admin UI overview" width="800" />
 </a>
