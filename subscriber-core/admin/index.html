@@ -489,6 +489,7 @@
         <strong>Debug</strong>
     </div>
     <div id="listenerLogsWrapper" class="collapsible-content" style="display:none;">
+        <p id="version" class="muted">Loading versions...</p>
         <div id="listenerLogs"></div>
     </div>
 </div>
@@ -2514,6 +2515,7 @@
         // start with hot wallets collapsed
         setHotWalletState(false);
         refreshHeader();
+        getVersion();
         try { registerKeplrKeystoreChange(); } catch (err) { console.warn("Keplr listener not attached", err); }
         // Refresh wallet/header on the configured cadence (default 15s)
         await configureWalletRefreshInterval();
@@ -3596,6 +3598,35 @@
         listenersCache.forEach((l) => fetchListenerLog(l.id, `log-${l.id}`));
     }
 
+    async function getVersion() {
+        const versionEl = document.getElementById("version");
+        if (!versionEl) return;
+        versionEl.textContent = "Loading versions...";
+        try {
+            const res = await fetch(apiUrl("/api/version"), { cache: "no-store" });
+            const data = await res.json();
+            const appVersion = data && data.app_version ? data.app_version : "";
+            const arkeodVersion = data && data.arkeod_version ? data.arkeod_version : "";
+            const arkeodError = data && (data.arkeod_error || data.error) ? (data.arkeod_error || data.error) : "";
+            if (appVersion || arkeodVersion) {
+                const parts = [];
+                if (appVersion) parts.push("core version: " + appVersion);
+                if (arkeodVersion) {
+                    parts.push("arkeod version: " + arkeodVersion);
+                } else if (arkeodError) {
+                    parts.push("arkeod version: unavailable");
+                }
+                versionEl.textContent = parts.join(" | ");
+            } else if (arkeodError) {
+                versionEl.textContent = "Error getting version: " + arkeodError;
+            } else {
+                versionEl.textContent = "Unknown version response";
+            }
+        } catch (e) {
+            versionEl.textContent = "Error fetching version: " + e;
+        }
+    }
+
     function toggleDebugLogs() {
         const wrap = document.getElementById("listenerLogsWrapper");
         const caret = document.getElementById("debugCaret");
@@ -3606,6 +3637,7 @@
         const heading = document.querySelector(".debug-collapsible");
         if (heading) heading.setAttribute("aria-expanded", isHidden ? "true" : "false");
         if (isHidden) {
+            getVersion();
             renderListenerLogs();
         }
     }

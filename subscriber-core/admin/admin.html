@@ -375,7 +375,8 @@
             const info = await parseSafe(infoRes);
 
             const appVersionEl = document.getElementById("adminAppVersion");
-            if (appVersionEl) appVersionEl.textContent = version && !version.error ? version.app_version || "(unknown)" : "Unavailable";
+            const appVersionVal = version && version.app_version ? version.app_version : "";
+            if (appVersionEl) appVersionEl.textContent = appVersionVal || (version && version.error ? "Unavailable" : "(unknown)");
 
             const apiVersionEl = document.getElementById("adminApiVersion");
             if (apiVersionEl) {
