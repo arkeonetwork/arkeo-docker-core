@@ -17,6 +17,7 @@ TLS_KEY_PATH=${TLS_KEY_PATH:-/app/config/tls.key}
 TLS_CERT_CN=${TLS_CERT_CN:-localhost}
 TLS_SELF_SIGNED=${TLS_SELF_SIGNED:-1}
 CANONICAL_HOST=${CANONICAL_HOST:-marketplace.builtonarkeo.com}
+GA_MEASUREMENT_ID=${GA_MEASUREMENT_ID:-}
 CACHE_DIR=${CACHE_DIR:-/app/cache}
 CACHE_INIT_ON_START=${CACHE_INIT_ON_START:-1}
 CACHE_INIT_TIMEOUT=${CACHE_INIT_TIMEOUT:-120}
@@ -38,6 +39,7 @@ echo "  TLS_KEY_PATH         = $TLS_KEY_PATH"
 echo "  TLS_CERT_CN          = $TLS_CERT_CN"
 echo "  TLS_SELF_SIGNED      = $TLS_SELF_SIGNED"
 echo "  CANONICAL_HOST       = $CANONICAL_HOST"
+echo "  GA_MEASUREMENT_ID    = $GA_MEASUREMENT_ID"
 echo "  CACHE_DIR            = $CACHE_DIR"
 echo "  CACHE_INIT_ON_START  = $CACHE_INIT_ON_START"
 echo "  CACHE_INIT_TIMEOUT   = ${CACHE_INIT_TIMEOUT}s"
@@ -60,6 +62,16 @@ mkdir -p /app/config
 mkdir -p "$CACHE_DIR"
 mkdir -p /var/run /var/log/supervisor /run/nginx
 rm -f /etc/nginx/sites-enabled/default
+
+if [ -n "$GA_MEASUREMENT_ID" ]; then
+  cat > /app/admin/config.js <<EOF
+window.DASHBOARD_CONFIG = { gaMeasurementId: "${GA_MEASUREMENT_ID}" };
+EOF
+else
+  cat > /app/admin/config.js <<'EOF'
+window.DASHBOARD_CONFIG = {};
+EOF
+fi
 
 TLS_ACTIVE=0
 if [ "$ENABLE_TLS" = "1" ] || [ "$ENABLE_TLS" = "true" ]; then

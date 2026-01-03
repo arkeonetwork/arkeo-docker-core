@@ -866,6 +866,58 @@ def _extract_txhash(out: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _summarize_output(out: str, limit: int = 1200) -> str:
+    if not out:
+        return ""
+    text = out.strip()
+    if len(text) > limit:
+        text = text[:limit] + "...(truncated)"
+    return text.replace("\n", "\\n")
+
+
+def _log_tx_result(label: str, exit_code: int, out: str) -> str | None:
+    txhash = _extract_txhash(out or "")
+    summary = _summarize_output(out)
+    if txhash:
+        app.logger.info("%s exit=%s txhash=%s output=%s", label, exit_code, txhash, summary or "(empty)")
+    else:
+        app.logger.info("%s exit=%s output=%s", label, exit_code, summary or "(empty)")
+    return txhash
+
+
+def _poll_tx_height(txhash: str, attempts: int = 12, delay: float = 1.0) -> str | None:
+    if not txhash:
+        return None
+    cmd = ["arkeod", "q", "tx", txhash, "-o", "json", *NODE_ARGS]
+    for _ in range(attempts):
+        code, out = run_list(cmd)
+        if code == 0:
+            try:
+                data = json.loads(out or "{}")
+            except Exception:
+                data = {}
+            if isinstance(data, dict):
+                height = data.get("height") or (data.get("tx_response") or {}).get("height")
+                if height and str(height) != "0":
+                    return str(height)
+        time.sleep(delay)
+    return None
+
+
+def _log_tx_height_async(label: str, txhash: str | None, attempts: int = 12, delay: float = 1.0) -> None:
+    if not txhash:
+        return
+
+    def _worker() -> None:
+        height = _poll_tx_height(txhash, attempts=attempts, delay=delay)
+        if height:
+            app.logger.info("%s height=%s txhash=%s", label, height, txhash)
+        else:
+            app.logger.info("%s height=pending txhash=%s", label, txhash)
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
 def _parse_send_packet(data: dict) -> dict | None:
     """Parse send_packet event (packet sequence + channels) from an arkeod tx JSON."""
     if not isinstance(data, dict):
@@ -2341,7 +2393,8 @@ def bond_provider():
         "-y",
     ]
     code, bond_out = run_list(bond_cmd)
-    app.logger.info("bond-provider result code=%s service=%s", code, service)
+    bond_txhash = _log_tx_result(f"bond-provider service={service}", code, bond_out)
+    _log_tx_height_async("bond-provider", bond_txhash)
     if code != 0:
         return jsonify(
             {
@@ -2529,6 +2582,8 @@ def bond_and_mod_provider():
             "-y",
         ]
         bond_code, bond_out = run_list(bond_cmd)
+        bond_txhash = _log_tx_result(f"bond-mod-provider bond service={resolved_service}", bond_code, bond_out)
+        _log_tx_height_async("bond-mod-provider bond", bond_txhash)
         if bond_code != 0:
             return jsonify(
                 {
@@ -2598,6 +2653,8 @@ def bond_and_mod_provider():
     app.logger.info("bond-mod-provider mod sequence arg=%s", sequence_arg)
     mod_cmd, mod_code, mod_out = run_mod_with_sequence(sequence_arg)
     app.logger.info("bond-mod-provider mod cmd=%s", mod_cmd)
+    mod_txhash = _log_tx_result(f"bond-mod-provider mod service={resolved_service}", mod_code, mod_out)
+    _log_tx_height_async("bond-mod-provider mod", mod_txhash)
 
     # Retry once on account-sequence mismatch by refetching or using the expected sequence
     if "account sequence mismatch" in str(mod_out):
@@ -2632,6 +2689,8 @@ def bond_and_mod_provider():
                 time.sleep(1)
         mod_cmd, mod_code, mod_out = run_mod_with_sequence(retry_seq)
         app.logger.info("bond-mod-provider retry mod with sequence=%s code=%s", retry_seq, mod_code)
+        mod_txhash = _log_tx_result(f"bond-mod-provider mod-retry service={resolved_service}", mod_code, mod_out)
+        _log_tx_height_async("bond-mod-provider mod-retry", mod_txhash)
 
     if mod_code != 0:
         return jsonify(

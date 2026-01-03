@@ -302,6 +302,13 @@ docker run -d --name subscriber-core --restart=unless-stopped \\
       return fixed.replace(/\.?0+$/, '') || '0';
     };
 
+    const trackEvent = (eventName, params = {}) => {
+      if (typeof window === 'undefined') return;
+      if (typeof window.gtag === 'function') {
+        window.gtag('event', eventName, params);
+      }
+    };
+
     const blocksForRange = (range, blockTimeSeconds) => {
       const secs = TIME_WINDOWS[range];
       if (!secs) return null;
@@ -899,7 +906,7 @@ docker run -d --name subscriber-core --restart=unless-stopped \\
                 <>
                   <div className="mb-5 space-y-3">
                     <p className="text-secondaryText text-sm">The Arkeo Provider Data Engine lets you turn existing infrastructure into steady revenue by publishing services to the marketplace. Run the provider core and admin UI to list endpoints, set pricing, and get paid in ARKEO as subscribers use your data.</p>
-                    <a href="https://github.com/arkeonetwork/arkeo-data-engine/blob/main/provider-core/README.md" target="_blank" rel="noopener noreferrer" className="text-arkeo text-sm font-semibold inline-flex items-center gap-2 hover:brightness-110">
+                    <a href="https://github.com/arkeonetwork/arkeo-data-engine/blob/main/provider-core/README.md" target="_blank" rel="noopener noreferrer" onClick={() => trackEvent('cta_click', { cta: 'provider_install_guide' })} className="text-arkeo text-sm font-semibold inline-flex items-center gap-2 hover:brightness-110">
                       Provider install guide <Icons.External />
                     </a>
                     <a href="/images/arkeo-data-engine-provider-2.jpg" target="_blank" rel="noopener noreferrer" className="block overflow-hidden rounded-2xl border border-white/40 shadow-lg">
@@ -916,7 +923,7 @@ docker run -d --name subscriber-core --restart=unless-stopped \\
                   </div>
                 <div className="mt-6 flex gap-3">
                   <button onClick={onClose} className="flex-1 px-4 py-3 rounded-xl font-medium secondary-btn hover:brightness-110">Back</button>
-                  <a href="https://github.com/arkeonetwork/arkeo-data-engine/blob/main/provider-core/README.md" target="_blank" className="flex-1 primary-gradient text-white font-semibold py-3 rounded-xl flex items-center justify-center gap-2 primary-shadow">
+                  <a href="https://github.com/arkeonetwork/arkeo-data-engine/blob/main/provider-core/README.md" target="_blank" onClick={() => trackEvent('cta_click', { cta: 'provider_view_github' })} className="flex-1 primary-gradient text-white font-semibold py-3 rounded-xl flex items-center justify-center gap-2 primary-shadow">
                     View on GitHub <Icons.External />
                   </a>
                 </div>
@@ -956,7 +963,7 @@ docker run -d --name subscriber-core --restart=unless-stopped \\
                 <>
                   <div className="mb-5 space-y-3">
                     <p className="text-secondaryText text-sm">Arkeo Subscriber Data Engine gives developers and users a managed way to consume blockchain data through a docker-based listener proxy. It auto-selects providers by service and region, handles PAYG contracts and hot-wallet payments, and adds cost-effective failover so your apps stay online without locking into a single provider.</p>
-                    <a href="https://github.com/arkeonetwork/arkeo-data-engine/blob/main/subscriber-core/README.md" target="_blank" rel="noopener noreferrer" className="text-arkeo text-sm font-semibold inline-flex items-center gap-2 hover:brightness-110">
+                    <a href="https://github.com/arkeonetwork/arkeo-data-engine/blob/main/subscriber-core/README.md" target="_blank" rel="noopener noreferrer" onClick={() => trackEvent('cta_click', { cta: 'subscriber_install_guide' })} className="text-arkeo text-sm font-semibold inline-flex items-center gap-2 hover:brightness-110">
                       Subscriber install guide <Icons.External />
                     </a>
                     <a href="/images/arkeo-data-engine-subscriber-2.jpg" target="_blank" rel="noopener noreferrer" className="block overflow-hidden rounded-2xl border border-white/40 shadow-lg">
@@ -973,7 +980,7 @@ docker run -d --name subscriber-core --restart=unless-stopped \\
                   </div>
                 <div className="mt-6 flex gap-3">
                   <button onClick={onClose} className="flex-1 px-4 py-3 rounded-xl font-medium secondary-btn hover:brightness-110">Back</button>
-                  <a href="https://github.com/arkeonetwork/arkeo-data-engine/blob/main/subscriber-core/README.md" target="_blank" className="flex-1 primary-gradient text-white font-semibold py-3 rounded-xl flex items-center justify-center gap-2 primary-shadow">
+                  <a href="https://github.com/arkeonetwork/arkeo-data-engine/blob/main/subscriber-core/README.md" target="_blank" onClick={() => trackEvent('cta_click', { cta: 'subscriber_view_github' })} className="flex-1 primary-gradient text-white font-semibold py-3 rounded-xl flex items-center justify-center gap-2 primary-shadow">
                     View on GitHub <Icons.External />
                   </a>
                 </div>
@@ -1556,13 +1563,14 @@ docker run -d --name subscriber-core --restart=unless-stopped \\
                   </div>
                 </div>
                 <div className="flex flex-wrap items-center justify-end gap-3">
-                  <button onClick={() => setShowBecomeProvider(true)} className="primary-gradient text-white font-semibold px-4 py-2.5 rounded-xl transition-all primary-shadow flex items-center gap-2">
+                  <button onClick={() => { trackEvent('cta_click', { cta: 'provide_data' }); setShowBecomeProvider(true); }} className="primary-gradient text-white font-semibold px-4 py-2.5 rounded-xl transition-all primary-shadow flex items-center gap-2">
                     <Icons.Server /> I Want to Provide Data
                   </button>
-                  <button onClick={() => setShowSubscriberModal(true)} className="primary-gradient text-white font-semibold px-4 py-2.5 rounded-xl transition-all primary-shadow flex items-center gap-2">
+                  <button onClick={() => { trackEvent('cta_click', { cta: 'use_data' }); setShowSubscriberModal(true); }} className="primary-gradient text-white font-semibold px-4 py-2.5 rounded-xl transition-all primary-shadow flex items-center gap-2">
                     <Icons.Wand /> I Want to Use Data
                   </button>
                   <a href="https://app.osmosis.zone/?from=USDC&to=ARKEO" target="_blank" rel="noopener noreferrer"
+                    onClick={() => trackEvent('cta_click', { cta: 'get_arkeo_token' })}
                     className="flex items-center gap-2 bg-arkeo text-white font-semibold px-4 py-2.5 rounded-xl transition-all hover:brightness-110">
                     <Icons.Coin /> Get ARKEO Token
                   </a>
