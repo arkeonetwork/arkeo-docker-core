@@ -2639,6 +2639,25 @@ def _ensure_http_rpc(url: str | None) -> str:
     return s
 
 
+def _ensure_rpc_port(url: str | None) -> str:
+    """Ensure HTTP(S) RPC URLs include an explicit port (443/80 if missing)."""
+    if not url:
+        return ""
+    s = _strip_quotes(str(url).strip())
+    try:
+        parsed = urllib.parse.urlparse(s)
+    except Exception:
+        return s
+    if parsed.scheme not in ("http", "https"):
+        return s
+    if parsed.hostname and parsed.port is None:
+        port = 443 if parsed.scheme == "https" else 80
+        netloc = f"{parsed.hostname}:{port}"
+        parsed = parsed._replace(netloc=netloc)
+        return parsed.geturl()
+    return s
+
+
 def _default_subscriber_settings() -> dict:
     """Return defaults from env + sane fallbacks."""
     defaults = {
@@ -2743,7 +2762,7 @@ def _apply_subscriber_settings(settings: dict) -> None:
     KEY_MNEMONIC = settings.get("KEY_MNEMONIC", KEY_MNEMONIC)
     ARKEOD_HOME = _expand_tilde(settings.get("ARKEOD_HOME") or ARKEOD_HOME)
     node_val = settings.get("ARKEOD_NODE") or ARKEOD_NODE
-    ARKEOD_NODE = _ensure_tcp_scheme(_strip_quotes(node_val))
+    ARKEOD_NODE = _ensure_rpc_port(_ensure_tcp_scheme(_strip_quotes(node_val)))
     CHAIN_ID = _strip_quotes(settings.get("CHAIN_ID") or CHAIN_ID)
     NODE_ARGS = ["--node", ARKEOD_NODE] if ARKEOD_NODE else []
     CHAIN_ARGS = ["--chain-id", CHAIN_ID] if CHAIN_ID else []
@@ -2765,7 +2784,7 @@ def _apply_subscriber_settings(settings: dict) -> None:
     except Exception:
         OSMOSIS_USDC_DENOMS = DEFAULT_OSMOSIS_USDC_DENOMS.copy()
     # MIN_OSMO_GAS, DEFAULT_SLIPPAGE_BPS, ARRIVAL_TOLERANCE_BPS, and channel defaults are hardcoded; do not override from settings
-    OSMOSIS_RPC = _strip_quotes(settings.get("OSMOSIS_RPC") or OSMOSIS_RPC or "")
+    OSMOSIS_RPC = _ensure_rpc_port(_strip_quotes(settings.get("OSMOSIS_RPC") or OSMOSIS_RPC or ""))
     # Always keep hardcoded channel values
     OSMO_TO_ARKEO_CHANNEL = "channel-103074"
     ARKEO_TO_OSMO_CHANNEL = "channel-1"

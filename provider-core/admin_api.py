@@ -81,6 +81,40 @@ def _ensure_tcp_scheme(url: str | None) -> str:
     return "http://" + s
 
 
+def _ensure_rpc_port(url: str | None, default_port: str | None = None) -> str:
+    """Ensure RPC URLs include a port when missing (https->443, http->80, or default_port)."""
+    if not url:
+        return ""
+    s = _strip_quotes(str(url).strip())
+    if "://" not in s:
+        # No scheme; default to http and use default_port if provided.
+        if default_port and ":" not in s:
+            return f"http://{s}:{default_port}"
+        return f"http://{s}"
+    try:
+        parsed = urllib.parse.urlparse(s)
+    except Exception:
+        return s
+    scheme = parsed.scheme or "http"
+    host = parsed.hostname or parsed.netloc or parsed.path
+    if not host:
+        return s
+    port = parsed.port
+    if port is None:
+        if scheme == "https":
+            port = 443
+        elif scheme == "http":
+            port = 80
+        else:
+            port = int(default_port) if default_port else None
+    if not port:
+        return s
+    path = parsed.path or ""
+    query = f"?{parsed.query}" if parsed.query else ""
+    frag = f"#{parsed.fragment}" if parsed.fragment else ""
+    return f"{scheme}://{host}:{port}{path}{query}{frag}"
+
+
 def _ensure_http_rpc(url: str | None) -> str:
     """Return an HTTP(S) RPC URL suitable for browser use."""
     if not url:
@@ -3966,7 +4000,7 @@ def _apply_provider_settings(settings: dict) -> None:
     KEYRING = settings.get("KEY_KEYRING_BACKEND", KEYRING)
     ARKEOD_HOME = _expand_tilde(settings.get("ARKEOD_HOME") or ARKEOD_HOME)
     node_val = settings.get("ARKEOD_NODE") or ARKEOD_NODE
-    ARKEOD_NODE = _ensure_tcp_scheme(_strip_quotes(node_val))
+    ARKEOD_NODE = _ensure_rpc_port(_strip_quotes(node_val), default_port="26657")
     CHAIN_ID = _strip_quotes(settings.get("CHAIN_ID") or CHAIN_ID)
     NODE_ARGS = ["--node", ARKEOD_NODE] if ARKEOD_NODE else []
     CHAIN_ARGS = ["--chain-id", CHAIN_ID] if CHAIN_ID else []
@@ -3981,7 +4015,7 @@ def _apply_provider_settings(settings: dict) -> None:
         OSMOSIS_USDC_DENOMS = denoms
     except Exception:
         OSMOSIS_USDC_DENOMS = DEFAULT_OSMOSIS_USDC_DENOMS.copy()
-    OSMOSIS_RPC = _strip_quotes(settings.get("OSMOSIS_RPC") or OSMOSIS_RPC or "")
+    OSMOSIS_RPC = _ensure_rpc_port(_strip_quotes(settings.get("OSMOSIS_RPC") or OSMOSIS_RPC or ""), default_port="26657")
     OSMO_TO_ARKEO_CHANNEL = "channel-103074"
     ARKEO_TO_OSMO_CHANNEL = "channel-1"
 
@@ -5092,30 +5126,12 @@ def update_sentinel_config():
     _set_env("PORT", settings_sentinel_port)
     _set_env("SOURCE_CHAIN", settings_chain_id)
     # Sync from provider env vars if present (EXTERNAL_ARKEOD_NODE, PROVIDER_HUB_URI, SENTINEL_NODE)
-    def _normalize_hostport(url: str, default_port: str | None = None) -> str:
-        if not url:
-            return ""
-        url = url.strip()
-        if "://" not in url:
-            url = "http://" + url
-        try:
-            parsed = urllib.parse.urlparse(url)
-            hostport = parsed.netloc or parsed.path
-            if hostport and default_port and ":" not in hostport:
-                hostport = f"{hostport}:{default_port}"
-            return hostport
-        except Exception:
-            return url
-
-    provider_node = settings_node or _ensure_tcp_scheme(os.getenv("ARKEOD_NODE"))
+    provider_node = settings_node or _strip_quotes(os.getenv("ARKEOD_NODE") or "")
     if provider_node:
-        hostport = _normalize_hostport(provider_node, "26657")
-        if hostport:
-            # EVENT_STREAM_HOST should be host:port (no scheme)
-            hostport_no_scheme = hostport
-            if "://" in hostport_no_scheme:
-                hostport_no_scheme = hostport_no_scheme.split("://", 1)[1]
-            _set_env("EVENT_STREAM_HOST", hostport_no_scheme)
+        normalized_node = _ensure_rpc_port(provider_node, default_port="26657")
+        if normalized_node:
+            # EVENT_STREAM_HOST should include scheme and port.
+            _set_env("EVENT_STREAM_HOST", normalized_node)
     hub_env = settings_rest or os.getenv("PROVIDER_HUB_URI")
     if hub_env:
         _set_env("PROVIDER_HUB_URI", hub_env)

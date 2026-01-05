@@ -99,11 +99,26 @@ OSMOSIS_RPC=${OSMOSIS_RPC:-https://rpc.osmosis.zone}
 ADMIN_API_PORT=${ADMIN_API_PORT:-9999}
 
 # Default sentinel-related envs (used by sentinel binary)
-# EVENT_STREAM_HOST needs host:port (no scheme); derive from ARKEOD_NODE if unset.
+# EVENT_STREAM_HOST needs scheme://host:port; derive from ARKEOD_NODE if unset.
 if [ -z "$EVENT_STREAM_HOST" ]; then
-  EVENT_STREAM_HOST=$(printf "%s" "$ARKEOD_NODE" | sed 's~^[a-zA-Z]*://~~')
+  node="$ARKEOD_NODE"
+  if [[ "$node" != *"://"* ]]; then
+    node="http://$node"
+  fi
+  scheme="${node%%://*}"
+  hostport="${node#*://}"
+  if [[ "$hostport" != *":"* ]]; then
+    if [ "$scheme" = "https" ]; then
+      hostport="${hostport}:443"
+    elif [ "$scheme" = "http" ]; then
+      hostport="${hostport}:80"
+    else
+      hostport="${hostport}:26657"
+    fi
+  fi
+  EVENT_STREAM_HOST="${scheme}://${hostport}"
 fi
-EVENT_STREAM_HOST=${EVENT_STREAM_HOST:-127.0.0.1:26657}
+EVENT_STREAM_HOST=${EVENT_STREAM_HOST:-http://127.0.0.1:26657}
 export EVENT_STREAM_HOST
 export ADMIN_PORT
 export ADMIN_API_PORT
@@ -485,7 +500,7 @@ CLEAN_LOCATION=$(strip_quotes "${LOCATION:-$DEFAULT_LOCATION}")
 CLEAN_FREE_RATE_LIMIT=$(strip_quotes "${FREE_RATE_LIMIT:-$DEFAULT_FREE_RATE_LIMIT}")
 CLEAN_FREE_RATE_LIMIT_DURATION=$(strip_quotes "${FREE_RATE_LIMIT_DURATION:-$DEFAULT_FREE_RATE_LIMIT_DURATION}")
 CLEAN_PROVIDER_HUB_URI=$(strip_quotes "${PROVIDER_HUB_URI:-}")
-CLEAN_EVENT_STREAM_HOST=$(strip_quotes "${EVENT_STREAM_HOST:-127.0.0.1:26657}")
+CLEAN_EVENT_STREAM_HOST=$(strip_quotes "${EVENT_STREAM_HOST:-http://127.0.0.1:26657}")
 CLEAN_CLAIM_STORE_LOCATION=$(strip_quotes "${CLAIM_STORE_LOCATION:-$DEFAULT_CLAIM_STORE_LOCATION}")
 CLEAN_CONTRACT_CONFIG_STORE_LOCATION=$(strip_quotes "${CONTRACT_CONFIG_STORE_LOCATION:-$DEFAULT_CONTRACT_CONFIG_STORE_LOCATION}")
 CLEAN_PROVIDER_CONFIG_STORE_LOCATION=$(strip_quotes "${PROVIDER_CONFIG_STORE_LOCATION:-$DEFAULT_PROVIDER_CONFIG_STORE_LOCATION}")
@@ -588,6 +603,7 @@ python3 - <<'PY'
 import json
 import os
 import shlex
+import urllib.parse
 from pathlib import Path
 
 import yaml
@@ -645,12 +661,33 @@ provider_hub = pick("PROVIDER_HUB_URI")
 
 if chain_id:
     env_data["SOURCE_CHAIN"] = chain_id
+def normalize_event_stream(value: str, default_port: int = 26657) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    if "://" not in raw:
+        raw = f"http://{raw}"
+    try:
+        parsed = urllib.parse.urlparse(raw)
+    except Exception:
+        return raw
+    scheme = parsed.scheme or "http"
+    host = parsed.hostname or parsed.netloc or parsed.path
+    if not host:
+        return raw
+    port = parsed.port
+    if port is None:
+        if scheme == "https":
+            port = 443
+        elif scheme == "http":
+            port = 80
+        else:
+            port = default_port
+    return f"{scheme}://{host}:{port}" if port else f"{scheme}://{host}"
+
 if arkeod_node:
     env_data["ARKEOD_NODE"] = arkeod_node
-    hostport = arkeod_node
-    if "://" in hostport:
-        hostport = hostport.split("://", 1)[1]
-    env_data["EVENT_STREAM_HOST"] = hostport
+    env_data["EVENT_STREAM_HOST"] = normalize_event_stream(arkeod_node)
 if provider_hub:
     env_data["PROVIDER_HUB_URI"] = provider_hub
 if sentinel_node:

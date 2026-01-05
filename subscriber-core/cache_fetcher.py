@@ -627,6 +627,25 @@ def _is_localhost_uri(uri: str | None) -> bool:
         return False
 
 
+def _ensure_rpc_port(url: str | None) -> str:
+    """Ensure HTTP(S) RPC URLs include an explicit port (443/80 if missing)."""
+    if not url:
+        return ""
+    s = str(url).strip()
+    try:
+        parsed = urlparse(s)
+    except Exception:
+        return s
+    if parsed.scheme not in ("http", "https"):
+        return s
+    if parsed.hostname and parsed.port is None:
+        port = 443 if parsed.scheme == "https" else 80
+        netloc = f"{parsed.hostname}:{port}"
+        parsed = parsed._replace(netloc=netloc)
+        return parsed.geturl()
+    return s
+
+
 def _refresh_runtime_settings() -> None:
     """Reload ARKEOD_NODE from subscriber-settings.json if present."""
     global ARKEOD_NODE
@@ -638,7 +657,7 @@ def _refresh_runtime_settings() -> None:
         settings = {}
     node_val = settings.get("ARKEOD_NODE") or os.getenv("ARKEOD_NODE") or os.getenv("EXTERNAL_ARKEOD_NODE") or ARKEOD_NODE
     if node_val:
-        ARKEOD_NODE = str(node_val).strip()
+        ARKEOD_NODE = _ensure_rpc_port(str(node_val).strip())
 
 
 def _env_int(name: str, default: int) -> int:
